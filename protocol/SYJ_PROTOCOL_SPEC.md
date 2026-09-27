@@ -228,7 +228,25 @@ For each block: 1. validate exactly one coinbase; 2. apply coinbase
 issuance; 3. validate every normal transaction; 4. debit sender; 5.
 credit receiver; 6. enforce supply ceiling.
 
-State root: **UNDEFINED**.
+State root: **UNDEFINED in this frozen baseline**.
+
+### Phase 9.5 clarification
+
+This initial frozen baseline does not define a state-root field as part of
+block-header consensus.
+
+Phase 9.5 introduces a deterministic state-root **sidecar/checkpoint
+commitment** for incremental state validation and checkpoint recovery. This
+commitment is derived from deterministic state snapshots and has associated
+test vectors and validation code.
+
+The Phase 9.5 commitment is **not an active block-header consensus field** in
+this frozen protocol version. It therefore does not change the serialization,
+block-hash, or consensus rules defined by this baseline.
+
+Any future activation of a state-root field in block-header consensus requires
+an explicit protocol-version transition, compatibility vectors, activation
+rules, migration strategy, and testnet/network validation.
 
 ## 30. Block validation
 

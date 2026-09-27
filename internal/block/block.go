@@ -52,6 +52,62 @@ func New(index int64, previousHash string, timestamp float64, nonce uint64, diff
 	return b, nil
 }
 
+// NewWithMerkleVersion constructs a block using an explicitly selected Merkle protocol.
+// Versions 1 and 2 preserve the historical construction; version 3 selects the
+// Phase 9.5 amended construction. Historical blocks must continue using New.
+func NewWithMerkleVersion(index int64, previousHash string, timestamp float64, nonce uint64, difficulty int, txs []transaction.Transaction, merkleVersion uint8) (*Block, error) {
+	normalized := append([]transaction.Transaction(nil), txs...)
+	for i := range normalized {
+		if normalized[i].Version == transaction.V2Version {
+			if normalized[i].TxID == "" {
+				h, err := normalized[i].ComputeV2TxID()
+				if err != nil {
+					return nil, err
+				}
+				normalized[i].TxID = h
+			}
+		} else if normalized[i].TxHash == "" {
+			h, err := normalized[i].ComputeHash()
+			if err != nil {
+				return nil, err
+			}
+			normalized[i].TxHash = h
+		}
+	}
+	hashes := make([]string, len(normalized))
+	for i := range normalized {
+		hashes[i] = normalized[i].IdentityHash()
+	}
+	root, err := MerkleRootForProtocol(merkleVersion, hashes)
+	if err != nil {
+		return nil, err
+	}
+	b := &Block{Header: Header{Index: index, PreviousHash: previousHash, Timestamp: timestamp, Nonce: nonce, Difficulty: difficulty, MerkleRoot: root}, Transactions: normalized}
+	h, _, err := HashHeader(b.Header)
+	if err != nil {
+		return nil, err
+	}
+	b.Hash = h
+	return b, nil
+}
+
+func (b *Block) RecomputeWithMerkleVersion(merkleVersion uint8) error {
+	hashes := make([]string, len(b.Transactions))
+	for i := range b.Transactions {
+		hashes[i] = b.Transactions[i].IdentityHash()
+	}
+	root, err := MerkleRootForProtocol(merkleVersion, hashes)
+	if err != nil {
+		return err
+	}
+	b.MerkleRoot = root
+	h, _, err := HashHeader(b.Header)
+	if err == nil {
+		b.Hash = h
+	}
+	return err
+}
+
 func (b *Block) Recompute() error {
 	hashes := make([]string, len(b.Transactions))
 	for i := range b.Transactions {

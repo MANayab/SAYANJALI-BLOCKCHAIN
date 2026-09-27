@@ -81,6 +81,54 @@ peer-to-peer protocol. Explicitly deferred:
 - Gas/fee metering model
 - Milestone: deploy and call a simple contract (e.g. a counter or token)
 
+## Phase 9.5 — Security & State Validation Hardening 🟡 (engineering validation)
+
+Phase 9.5 strengthens the protocol implementation and validation path without
+declaring production or mainnet readiness.
+
+Implemented / materially advanced:
+
+- Deterministic state snapshots and state-root computation.
+- Deterministic account ordering.
+- Hardened and bounded checkpoint encoding/decoding.
+- Truncated-checkpoint and duplicate-account rejection.
+- Deterministic state-root test vectors.
+- Merkle Protocol V3 with domain-separated hashing and leaf-count commitment.
+- Regression coverage for the historical duplicate-last Merkle ambiguity.
+- Incremental state validation and periodic state checkpoints.
+- Checkpoint restart/recovery validation.
+- Legacy replay versus incremental-state differential testing.
+- V2 divergent-branch/reorganization state validation.
+- State-root verification following V2 reorganization.
+- Improved block → checkpoint → durable-tip persistence ordering.
+
+Current local validation:
+
+- Go `1.27.0 android/arm64`: full test, vet, and build gates pass.
+- Python `3.14.6`: `262 passed, 1 warning`.
+- Python compileall: pass.
+- pip-audit: no known vulnerabilities.
+- Bandit: no issues identified.
+
+Still outstanding:
+
+- Live Phase 9.5 runtime verification.
+- staticcheck, govulncheck, and gosec execution.
+- Supported-target Go race validation.
+- Fuzzing.
+- Empirical 400-block mining/difficulty regression.
+- Crash/fault-injection proof of fully atomic persistence.
+- Historical V1 mempool/reorganization semantics.
+- External security audit.
+- Merkle V3 activation and network compatibility review.
+
+The Phase 9.5 state root is a deterministic sidecar/checkpoint commitment and
+is not an active state-root field in the current block-header consensus format.
+
+**Phase 9.5 status: ENGINEERING HARDENING / VALIDATION IN PROGRESS.**
+
+**Production status: NOT PRODUCTION-READY / NOT MAINNET-READY.**
+
 ## Phase 10 — Mainnet
 - Security audit of consensus, wallet, and API layers
 - Multi-signature wallet support
@@ -123,11 +171,17 @@ additive module on a clean core, not a rewrite.
 A separate productionization effort, governed by its own phase sequence
 documented in `docs/PRODUCTIONIZATION_STATE.md` (distinct from this
 roadmap's phase numbering above -- its "Phase 1" is not this document's
-Phase 1), added 36 further tests fixing three CRITICAL protocol
-correctness findings (independent difficulty enforcement during
-validation, exact coinbase reward enforcement, mempool pending-spend
-accounting), bringing the suite to 231 passing tests as of that work's
-completion.
+Phase 1), addressed additional critical protocol-correctness findings
+including independent difficulty enforcement during validation, exact
+coinbase reward enforcement, and mempool pending-spend accounting.
+
+Later Phase 9.x and Phase 9.5 work added further consensus, networking,
+state-validation, checkpoint, Merkle, and security hardening. Historical
+test-count figures in earlier phase records are retained as historical
+milestones and are not used as the current validation count.
+
+The current Phase 9.5 local validation record reports 262 Python tests
+passing with one warning, alongside the current Go test/vet/build gates.
 
 **A note on terminology:** Phase 6 makes this a networked, multi-node
 *prototype* -- nodes communicate, propagate, and converge. It is not

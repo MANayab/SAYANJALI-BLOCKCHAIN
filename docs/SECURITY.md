@@ -87,7 +87,7 @@ checkpoint. It does not claim perfect security.
 Wallet private keys authorize value movement and must remain
 client-side.
 
-Current limitation: `/wallet/create` returns a private key. This is
+Current status: `/wallet/create` does not return private-key material. This is
 acceptable only as an MVP development flow and must not be treated as
 production wallet custody architecture.
 
@@ -106,6 +106,74 @@ peer diversity/reputation strategy; - fuzz/property testing; -
 crash/power-loss recovery; - dependency pinning; - CI security checks; -
 adversarial consensus tests; - key-management review; - external
 security review.
+
+## Phase 9.5 Security Status
+
+Phase 9.5 adds security hardening for deterministic state commitment, incremental state validation, checkpoint persistence/recovery, Merkle commitment semantics, and V2 chain-reorganization state handling.
+
+### Implemented and locally validated
+
+- Deterministic state snapshots and state-root computation.
+- Deterministic account ordering.
+- Bounded checkpoint decoding with account and field-size limits.
+- Complete checkpoint reads using `io.ReadFull`.
+- Rejection of truncated checkpoint data.
+- Rejection of duplicate account entries.
+- Deterministic state-root vectors.
+- Merkle Protocol V3 with domain-separated leaf/node/root hashing and leaf-count commitment.
+- Regression coverage for the historical duplicate-last Merkle ambiguity.
+- Incremental state validation and periodic checkpoints.
+- Checkpoint restart/recovery validation.
+- Legacy replay versus incremental-state differential validation.
+- V2 divergent-branch/reorganization state validation.
+- State-root verification following V2 reorganization.
+- Safer block → checkpoint → durable-tip persistence ordering.
+
+### Current verification environment
+
+The latest local validation environment is:
+
+- Go `1.27.0 android/arm64`
+- Python `3.14.6`
+
+Validated locally:
+
+- Go tests — **PASS**
+- Go vet — **PASS**
+- Go build — **PASS**
+- gofmt verification — **PASS**
+- Python tests — **262 passed, 1 warning**
+- Python compileall — **PASS**
+- pip-audit — **PASS / No known vulnerabilities**
+- Bandit — **PASS / No issues identified**
+
+The following security/validation gates remain **NOT EXECUTED** in the current environment:
+
+- staticcheck
+- govulncheck
+- gosec
+- Go race detector on Android/ARM64
+- fuzzing
+- empirical 400-block mining/difficulty regression
+- live Phase 9.5 runtime verification harness
+- external security audit
+
+### Security interpretation
+
+Phase 9.5 implementation and local validation do **not** establish production security approval.
+
+The state root is currently a deterministic **sidecar/checkpoint commitment** and is not an active state-root field in the block-header consensus format.
+
+Merkle Protocol V3 is implemented and tested, but activation and network compatibility remain deferred.
+
+Historical V1 mempool/reorganization semantics remain an open issue and are not claimed as resolved by Phase 9.5.
+
+The improved block/checkpoint/durable-tip ordering does not constitute crash/fault-injection proof of fully atomic persistence. That verification remains outstanding.
+
+Cosmos SDK / CometBFT remains a future architecture direction and is not implemented in the current repository.
+
+**Project security status: NOT PRODUCTION-READY / NOT MAINNET-READY.**
+
 
 ## Security language policy
 

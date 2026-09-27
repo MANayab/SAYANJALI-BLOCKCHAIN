@@ -1,0 +1,42 @@
+{
+  "vector_format_version": 1,
+  "cases": [
+    {
+      "name": "empty",
+      "balances": {},
+      "nonces": {},
+      "genesis_supply": 0,
+      "mining_issued": 0,
+      "supply": 0,
+      "expected_root": "91755aa11bcdbc16d735ccc1f58a755bbf40a8f9a9956bebfda97ade20aab863"
+    },
+    {
+      "name": "accounts",
+      "balances": {
+        "SYJa": 10,
+        "SYJb": 20
+      },
+      "nonces": {
+        "SYJa": 2
+      },
+      "genesis_supply": 30,
+      "mining_issued": 5,
+      "supply": 35,
+      "expected_root": "c2327fa4645ef04ead0e59e5e8492977888efe346473e9def32f3e6eba423904"
+    },
+    {
+      "name": "transfer",
+      "balances": {
+        "SYJa": 7,
+        "SYJb": 23
+      },
+      "nonces": {
+        "SYJa": 3
+      },
+      "genesis_supply": 30,
+      "mining_issued": 5,
+      "supply": 35,
+      "expected_root": "aebe5a161bfc0c10e64cd5f151011ac7c06b89f56f3538696a935c0a6aafc51e"
+    }
+  ]
+}

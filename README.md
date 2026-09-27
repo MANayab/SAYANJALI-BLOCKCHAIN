@@ -717,6 +717,87 @@ ahead of any mainnet deployment.
 Vulnerabilities should be reported privately rather than through public
 issues, given the project's early stage.
 
+## Phase 9.5 Current Verification Status
+
+> **Engineering status:** Phase 9.5 implementation is present in the current working tree and has passed the local Go/Python validation gates available on the current Android/ARM64 environment.
+>
+> **Production status:** **NOT PRODUCTION-READY / NOT MAINNET-READY.**
+
+Phase 9.5 strengthens deterministic state commitment, incremental state validation, checkpoint recovery, Merkle commitment semantics, and state handling across chain reorganization. These changes do **not** constitute production-consensus approval.
+
+### Phase 9.5 implementation
+
+The current working tree includes:
+
+- deterministic state snapshots and state-root computation
+- deterministic account ordering
+- bounded checkpoint encoding/decoding
+- complete checkpoint reads using `io.ReadFull`
+- truncated checkpoint rejection
+- duplicate-account rejection
+- deterministic state-root test vectors
+- Merkle Protocol V3 with domain-separated leaf/node/root hashing
+- Merkle leaf-count commitment
+- regression coverage for historical duplicate-last ambiguity
+- preservation tests for historical Merkle behavior
+- incremental state validation
+- periodic state checkpoints
+- checkpoint restart/recovery validation
+- legacy replay vs incremental-state differential validation
+- V2 divergent-branch/reorganization state validation
+- state-root verification after V2 reorganization
+- safer block → checkpoint → durable-tip persistence ordering
+- generated runtime logs excluded from the working source release
+
+### Phase 9.5 focused tests
+
+The Phase 9.5 state/reorganization test coverage includes:
+
+- `TestPhase9_5IncrementalStateMatchesLegacyReplay`
+- `TestPhase9_5IncrementalStateSurvivesCheckpointRestart`
+- `TestPhase9_5StateSnapshotDeterministic`
+- `TestPhase9_5V2ReorgIncrementalStateMatchesLegacyReplay`
+- checkpoint decode hardening tests for truncation and duplicate accounts
+
+### Current local validation
+
+The latest local validation was performed with:
+
+- Go: `go1.27.0 android/arm64`
+- Python: `3.14.6`
+
+Results:
+
+- `go test ./...` — **PASS**
+- `go vet ./...` — **PASS**
+- `go build ./...` — **PASS**
+- `gofmt` verification — **PASS**
+- `pytest -q` — **262 passed, 1 warning**
+- `compileall` — **PASS**
+- `pip-audit -r requirements.lock.txt` — **PASS / No known vulnerabilities**
+- Bandit — **PASS / No issues identified**
+
+The following gates were **NOT EXECUTED** in the current environment because the required tools or platform support were unavailable:
+
+- `staticcheck`
+- `govulncheck`
+- `gosec`
+- Go race detector on Android/ARM64
+- fuzzing
+- empirical 400-block mining/difficulty regression
+- live Phase 9.5 runtime verification harness
+- external security audit
+
+### Important protocol status
+
+- The Phase 9.5 state root is currently a **deterministic sidecar/checkpoint commitment**. It is **not an active state-root field in the block header consensus format**.
+- Merkle Protocol V3 is implemented and tested, but activation and network compatibility remain deferred.
+- Historical V1 mempool/reorganization semantics remain an open issue and are not claimed as resolved by Phase 9.5.
+- Crash/fault-injection proof of fully atomic block/state/tip persistence remains outstanding.
+- Cosmos SDK / CometBFT remains a future architecture direction and is **not implemented** in the current repository.
+- The project remains **NOT PRODUCTION-READY / NOT MAINNET-READY**.
+
+
 ## Roadmap
 
 | Phase | Scope | Status |

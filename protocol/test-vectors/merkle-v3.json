@@ -1,0 +1,77 @@
+{
+  "vector_format_version": 3,
+  "construction": "leaf/domain-separated + internal-node/domain-separated + explicit leaf-count root commitment",
+  "odd_rule": "duplicate final node within a level; root leaf-count commitment makes tree shape/count unambiguous",
+  "empty_rule": "SHA-256(domain-separated empty marker, then root commits count=0)",
+  "cases": [
+    {
+      "name": "empty",
+      "transaction_hashes": [],
+      "expected_merkle_root": "cf8095a19fd0b8199d8ed86aebf607fe37cbc66774495bcabebe91aec6e9242c"
+    },
+    {
+      "name": "one",
+      "transaction_hashes": [
+        "A"
+      ],
+      "expected_merkle_root": "15b7188492895e2b0e6d6c6f11d9ad8c7d02ca6c451179b6069b1967d210b6a5"
+    },
+    {
+      "name": "two",
+      "transaction_hashes": [
+        "A",
+        "B"
+      ],
+      "expected_merkle_root": "dbe3ae7c87eebe5e024fcc4c1433bf3e095ead7c4129e282bddb0b65cb5fdd39"
+    },
+    {
+      "name": "three",
+      "transaction_hashes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "expected_merkle_root": "ae6672be6a105891a8c53e4208fca6ea0e4c4454591be8620e85bc6b1d5c8004"
+    },
+    {
+      "name": "four",
+      "transaction_hashes": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "expected_merkle_root": "be36f9ceb13b59813af22d325dea744aa49d5e001f1544301fa9a7eb1f6d9064"
+    },
+    {
+      "name": "five",
+      "transaction_hashes": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "expected_merkle_root": "cdd88fdc41cd47791add7894c0a87163a6be9fc6ff19ffdf4ef13c70d666e6b6"
+    },
+    {
+      "name": "abc",
+      "transaction_hashes": [
+        "A",
+        "B",
+        "C"
+      ],
+      "expected_merkle_root": "ae6672be6a105891a8c53e4208fca6ea0e4c4454591be8620e85bc6b1d5c8004"
+    },
+    {
+      "name": "abcc",
+      "transaction_hashes": [
+        "A",
+        "B",
+        "C",
+        "C"
+      ],
+      "expected_merkle_root": "8f75d17d41c8631d30dd5654b7e78ce14f3b7e443392c6418ba10667663e83ed"
+    }
+  ]
+}

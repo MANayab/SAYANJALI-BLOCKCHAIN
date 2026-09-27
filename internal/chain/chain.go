@@ -12,6 +12,7 @@ import (
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/consensus"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/networkid"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/state"
+	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/statecommitment"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/storage"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/tokenomics"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/transaction"
@@ -35,6 +36,8 @@ type Chain struct {
 	networkID       string
 	networkName     string
 	nonces          map[string]uint64
+	stateSnapshots  map[string]*statecommitment.Snapshot
+	stateRoot       string
 	reorgCandidates []transaction.Transaction
 }
 
@@ -82,6 +85,7 @@ func openWithProtocol(store *storage.Store, genesisState *tokenomics.GenesisStat
 		networkID:       networkID,
 		networkName:     networkName,
 		nonces:          make(map[string]uint64),
+		stateSnapshots:  make(map[string]*statecommitment.Snapshot),
 	}
 	bs, err := store.AllBlocks()
 	if err != nil {
@@ -127,6 +131,9 @@ func openWithProtocol(store *storage.Store, genesisState *tokenomics.GenesisStat
 	c.activeTip = tip
 	c.active = candidate
 	if err := c.replayState(candidate); err != nil {
+		return nil, err
+	}
+	if err := c.initializeIncrementalState(candidate); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -540,36 +547,421 @@ func (c *Chain) replayState(ch []*block.Block) error {
 	}
 	return nil
 }
+
+const stateCheckpointInterval int64 = 16
+
+func genesisSnapshot(genesisState *tokenomics.GenesisState) (*statecommitment.Snapshot, error) {
+	s := statecommitment.NewSnapshot()
+	if genesisState == nil {
+		return s, nil
+	}
+	if err := genesisState.Validate(wallet.ValidAddress); err != nil {
+		return nil, err
+	}
+	for _, a := range genesisState.Allocations {
+		if err := sCredit(s, a.Recipient, a.AmountBaseUnits); err != nil {
+			return nil, err
+		}
+		if ^uint64(0)-s.GenesisSupply < a.AmountBaseUnits {
+			return nil, errors.New("genesis supply overflow")
+		}
+		s.GenesisSupply += a.AmountBaseUnits
+	}
+	if s.GenesisSupply != tokenomics.ExpectedGenesisTotal() {
+		return nil, errors.New("genesis supply mismatch")
+	}
+	s.Supply = s.GenesisSupply
+	return s, nil
+}
+
+func sCredit(s *statecommitment.Snapshot, addr string, amount uint64) error {
+	cur := s.Balances[addr]
+	if ^uint64(0)-cur < amount {
+		return errors.New("balance overflow")
+	}
+	s.Balances[addr] = cur + amount
+	return nil
+}
+func sDebit(s *statecommitment.Snapshot, addr string, amount uint64) error {
+	cur := s.Balances[addr]
+	if amount > cur {
+		return errors.New("insufficient balance")
+	}
+	s.Balances[addr] = cur - amount
+	return nil
+}
+
+func applyIncrementalV1(s *statecommitment.Snapshot, b *block.Block, reward uint64, genesisState *tokenomics.GenesisState) error {
+	coin := 0
+	for _, tx := range b.Transactions {
+		if err := tx.Validate(); err != nil {
+			return err
+		}
+		if tx.Sender == protocol.GenesisAllocationSender {
+			return errors.New("genesis allocation cannot appear in a block")
+		}
+		if tx.Sender == protocol.CoinbaseSender {
+			coin++
+			if tx.SenderPublicKey != "" || tx.Signature != "" {
+				return errors.New("coinbase must be unsigned")
+			}
+			if tx.AmountBaseUnits != reward {
+				return errors.New("invalid coinbase reward")
+			}
+			if err := sCredit(s, tx.Receiver, tx.AmountBaseUnits); err != nil {
+				return err
+			}
+			if ^uint64(0)-s.MiningIssued < tx.AmountBaseUnits || ^uint64(0)-s.Supply < tx.AmountBaseUnits {
+				return errors.New("issuance overflow")
+			}
+			s.MiningIssued += tx.AmountBaseUnits
+			s.Supply += tx.AmountBaseUnits
+		} else {
+			if err := sDebit(s, tx.Sender, tx.AmountBaseUnits); err != nil {
+				return err
+			}
+			if err := sCredit(s, tx.Receiver, tx.AmountBaseUnits); err != nil {
+				return err
+			}
+		}
+	}
+	if coin != 1 {
+		return errors.New("exactly one coinbase required")
+	}
+	if genesisState != nil {
+		plan, err := tokenomics.NewSupplyPlan(s.GenesisSupply)
+		if err != nil {
+			return err
+		}
+		if err := plan.ValidateMiningIssued(s.MiningIssued); err != nil {
+			return err
+		}
+	} else if s.Supply > protocol.MaxSupplyBaseUnits {
+		return errors.New("maximum supply exceeded")
+	}
+	return nil
+}
+
+func applyIncrementalV2(s *statecommitment.Snapshot, b *block.Block, reward uint64, networkID string) error {
+	coin := 0
+	for _, tx := range b.Transactions {
+		id := tx.IdentityHash()
+		if id == "" {
+			return errors.New("V2 transaction identity is empty")
+		}
+		if tx.Sender == protocol.CoinbaseSender {
+			coin++
+			if err := v2CoinbaseValid(tx, networkID, reward); err != nil {
+				return err
+			}
+			if err := sCredit(s, tx.Receiver, tx.AmountBaseUnits); err != nil {
+				return err
+			}
+			if ^uint64(0)-s.MiningIssued < tx.AmountBaseUnits || ^uint64(0)-s.Supply < tx.AmountBaseUnits {
+				return errors.New("issuance overflow")
+			}
+			s.MiningIssued += tx.AmountBaseUnits
+			s.Supply += tx.AmountBaseUnits
+			continue
+		}
+		if err := tx.ValidateV2(networkID); err != nil {
+			return err
+		}
+		expected := s.Nonces[tx.Sender]
+		if tx.Nonce != expected {
+			return fmt.Errorf("invalid nonce for %s: got %d want %d", tx.Sender, tx.Nonce, expected)
+		}
+		if expected == ^uint64(0) {
+			return errors.New("sender nonce exhausted at uint64 maximum")
+		}
+		if err := sDebit(s, tx.Sender, tx.AmountBaseUnits); err != nil {
+			return err
+		}
+		if err := sCredit(s, tx.Receiver, tx.AmountBaseUnits); err != nil {
+			return err
+		}
+		s.Nonces[tx.Sender] = expected + 1
+	}
+	if coin != 1 {
+		return errors.New("exactly one V2 coinbase required")
+	}
+	if s.Supply > protocol.MaxSupplyBaseUnits {
+		return errors.New("maximum supply exceeded")
+	}
+	return nil
+}
+
+func applyIncrementalBlock(s *statecommitment.Snapshot, b *block.Block, reward uint64, genesisState *tokenomics.GenesisState, protocolVersion uint8, networkID string) error {
+	if b.Index == 0 {
+		return nil
+	}
+	if protocolVersion == 2 {
+		return applyIncrementalV2(s, b, reward, networkID)
+	}
+	return applyIncrementalV1(s, b, reward, genesisState)
+}
+
+func validateV2TransactionsAndStateStructure(prefix []*block.Block, b *block.Block, networkID string, reward uint64) error {
+	seen := make(map[string]struct{}, len(prefix)+len(b.Transactions))
+	for _, pb := range prefix {
+		for _, tx := range pb.Transactions {
+			id := tx.IdentityHash()
+			if id == "" {
+				return errors.New("V2 transaction identity is empty")
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	blockSeen := make(map[string]struct{}, len(b.Transactions))
+	coin := 0
+	for _, tx := range b.Transactions {
+		id := tx.IdentityHash()
+		if id == "" {
+			return errors.New("V2 transaction identity is empty")
+		}
+		if _, ok := seen[id]; ok {
+			return errors.New("duplicate V2 transaction identity already confirmed")
+		}
+		if _, ok := blockSeen[id]; ok {
+			return errors.New("duplicate V2 transaction identity in block")
+		}
+		blockSeen[id] = struct{}{}
+		if tx.Sender == protocol.CoinbaseSender {
+			coin++
+			if err := v2CoinbaseValid(tx, networkID, reward); err != nil {
+				return err
+			}
+		} else if err := tx.ValidateV2(networkID); err != nil {
+			return err
+		}
+	}
+	if coin != 1 {
+		return errors.New("exactly one V2 coinbase required")
+	}
+	hashes := make([]string, len(b.Transactions))
+	for i := range b.Transactions {
+		hashes[i] = b.Transactions[i].IdentityHash()
+	}
+	if block.MerkleRoot(hashes) != b.MerkleRoot {
+		return errors.New("V2 merkle root mismatch")
+	}
+	h, _, err := block.HashHeader(b.Header)
+	if err != nil {
+		return err
+	}
+	if h != b.Hash {
+		return errors.New("block hash mismatch")
+	}
+	return nil
+}
+
+func validateIncrementalBlock(b *block.Block, prefix []*block.Block, parent *statecommitment.Snapshot, cfg protocol.DifficultyConfig, genesisState *tokenomics.GenesisState, protocolVersion uint8, networkID string) (*statecommitment.Snapshot, error) {
+	if len(prefix) == 0 {
+		return nil, errors.New("empty chain prefix")
+	}
+	p := prefix[len(prefix)-1]
+	if b.Index != p.Index+1 {
+		return nil, errors.New("non-sequential block index")
+	}
+	if b.PreviousHash != p.Hash {
+		return nil, errors.New("previous hash mismatch")
+	}
+	if err := validateTimestamp(b.Timestamp, prefix); err != nil {
+		return nil, err
+	}
+	var reward uint64
+	var ok bool
+	if protocolVersion == 2 {
+		reward, ok = consensus.ExpectedMiningReward(parent.MiningIssued)
+	} else if genesisState != nil {
+		reward, ok = consensus.ExpectedMiningReward(parent.MiningIssued)
+	} else {
+		reward, ok = consensus.ExpectedReward(parent.Supply)
+	}
+	if !ok {
+		return nil, errors.New("no issuance remains")
+	}
+	expected, err := requiredNextDifficulty(prefix, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if b.Difficulty != expected {
+		return nil, fmt.Errorf("difficulty %d != required %d", b.Difficulty, expected)
+	}
+	if protocolVersion == 2 {
+		if err := validateV2TransactionsAndStateStructure(prefix, b, networkID, reward); err != nil {
+			return nil, err
+		}
+	} else if err := transactionsValid(prefix, b, reward); err != nil {
+		return nil, err
+	}
+	if err := consensus.ValidatePoW(b, expected); err != nil {
+		return nil, err
+	}
+	candidate := parent.Clone()
+	if err := applyIncrementalBlock(candidate, b, reward, genesisState, protocolVersion, networkID); err != nil {
+		return nil, err
+	}
+	return candidate, nil
+}
+
+func (c *Chain) initializeIncrementalState(ch []*block.Block) error {
+	if len(ch) == 0 {
+		return errors.New("cannot initialize state from empty chain")
+	}
+	base, err := genesisSnapshot(c.genesisState)
+	if err != nil {
+		return err
+	}
+	start := 1
+	for i := len(ch) - 1; i >= 0; i-- {
+		if raw, ok := c.store.GetStateCheckpoint(ch[i].Hash); ok {
+			decoded, err := statecommitment.Decode(raw)
+			if err != nil {
+				return fmt.Errorf("state checkpoint decode: %w", err)
+			}
+			base = decoded
+			start = i + 1
+			break
+		}
+	}
+	c.stateSnapshots = make(map[string]*statecommitment.Snapshot)
+	if start == 1 {
+		c.stateSnapshots[ch[0].Hash] = base.Clone()
+	}
+	current := base
+	for i := start; i < len(ch); i++ {
+		b := ch[i]
+		next, err := validateIncrementalBlock(b, ch[:i], current, protocol.DefaultDifficultyConfig(), c.genesisState, c.protocolVersion, c.networkID)
+		if err != nil {
+			return fmt.Errorf("incremental state at block %d: %w", b.Index, err)
+		}
+		current = next
+		if b.Index%stateCheckpointInterval == 0 {
+			if err := c.store.SaveStateCheckpoint(b.Hash, statecommitment.Encode(current)); err != nil {
+				return err
+			}
+		}
+	}
+	c.stateSnapshots[ch[len(ch)-1].Hash] = current.Clone()
+	c.stateRoot = current.Root()
+	return nil
+}
+
+func (c *Chain) stateForParent(prefix []*block.Block) (*statecommitment.Snapshot, error) {
+	parent := prefix[len(prefix)-1]
+	if s, ok := c.stateSnapshots[parent.Hash]; ok {
+		return s.Clone(), nil
+	}
+	// Forks are reconstructed only from the nearest known state checkpoint/common ancestor,
+	// never by replaying the complete active history.
+	base, err := genesisSnapshot(c.genesisState)
+	if err != nil {
+		return nil, err
+	}
+	start := 1
+	for i := len(prefix) - 1; i >= 0; i-- {
+		if raw, ok := c.store.GetStateCheckpoint(prefix[i].Hash); ok {
+			decoded, err := statecommitment.Decode(raw)
+			if err != nil {
+				return nil, fmt.Errorf("state checkpoint decode: %w", err)
+			}
+			base = decoded
+			start = i + 1
+			break
+		}
+	}
+	for i := start; i < len(prefix); i++ {
+		b := prefix[i]
+		next, err := validateIncrementalBlock(b, prefix[:i], base, protocol.DefaultDifficultyConfig(), c.genesisState, c.protocolVersion, c.networkID)
+		if err != nil {
+			return nil, err
+		}
+		base = next
+		c.stateSnapshots[b.Hash] = base.Clone()
+	}
+	return base.Clone(), nil
+}
+
 func work(ch []*block.Block) *big.Int { return consensus.ChainWork(ch) }
 func (c *Chain) Accept(b *block.Block) (bool, string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	if _, ok := c.blocks[b.Hash]; ok {
 		return false, "duplicate", nil
 	}
 	if b.Index == 0 {
 		return false, "genesis", errors.New("genesis already exists")
 	}
+
 	prefix, err := c.buildChain(b.PreviousHash)
 	if err != nil {
 		return false, "unknown_ancestor", err
 	}
-	if err := c.validateChain(prefix); err != nil {
-		return false, "invalid_ancestor", err
+
+	parentState, err := c.stateForParent(prefix)
+	if err != nil {
+		return false, "state", err
 	}
-	if c.protocolVersion == 2 {
-		if err := validateNextV2(b, prefix, protocol.DefaultDifficultyConfig(), c.genesisState, c.networkID); err != nil {
-			return false, "invalid", err
-		}
-	} else if err := validateNext(b, prefix, protocol.DefaultDifficultyConfig(), c.genesisState); err != nil {
+
+	if _, err := validateIncrementalBlock(
+		b,
+		prefix,
+		parentState,
+		protocol.DefaultDifficultyConfig(),
+		c.genesisState,
+		c.protocolVersion,
+		c.networkID,
+	); err != nil {
 		return false, "invalid", err
 	}
+
+	candidate := append(append([]*block.Block(nil), prefix...), b)
+
+	// Persist the block before making it eligible to become the durable tip.
 	if err := c.store.SaveBlock(b); err != nil {
 		return false, "storage", err
 	}
 	c.blocks[b.Hash] = b
-	candidate := append(append([]*block.Block(nil), prefix...), b)
+
 	if work(candidate).Cmp(work(c.active)) > 0 {
+		// Derive the complete winning state before changing either the
+		// durable tip or the in-memory active chain.
+		winningState, err := c.stateForParent(prefix)
+		if err != nil {
+			return false, "state", err
+		}
+
+		nextState, err := validateIncrementalBlock(
+			b,
+			prefix,
+			winningState,
+			protocol.DefaultDifficultyConfig(),
+			c.genesisState,
+			c.protocolVersion,
+			c.networkID,
+		)
+		if err != nil {
+			return false, "state", err
+		}
+
+		// Prepare the checkpoint before advancing the durable tip. If
+		// checkpoint persistence fails, the previous durable tip remains
+		// authoritative and the active in-memory chain is unchanged.
+		if b.Index%stateCheckpointInterval == 0 {
+			payload := statecommitment.Encode(nextState)
+			if err := c.store.SaveStateCheckpoint(b.Hash, payload); err != nil {
+				return false, "storage", err
+			}
+		}
+
+		// Only after all state derivation and required persistence have
+		// succeeded do we advance the durable tip.
+		if err := c.store.SetTip(b.Hash); err != nil {
+			return false, "storage", err
+		}
+
 		if c.protocolVersion == 2 {
 			common := -1
 			limit := len(prefix)
@@ -583,6 +975,7 @@ func (c *Chain) Accept(b *block.Block) (bool, string, error) {
 					break
 				}
 			}
+
 			c.reorgCandidates = c.reorgCandidates[:0]
 			if common >= 0 {
 				for i := common + 1; i < len(c.active); i++ {
@@ -594,18 +987,45 @@ func (c *Chain) Accept(b *block.Block) (bool, string, error) {
 				}
 			}
 		}
-		if err := c.store.SetTip(b.Hash); err != nil {
-			return false, "storage", err
-		}
+
+		// Durable persistence has succeeded; now publish the new active
+		// state in memory.
 		c.activeTip = b.Hash
 		c.active = candidate
-		if err := c.replayState(candidate); err != nil {
-			return false, "state", err
+
+		c.stateSnapshots[b.Hash] = nextState.Clone()
+		c.stateRoot = nextState.Root()
+
+		c.balances = make(state.Balances)
+		for a, v := range nextState.Balances {
+			c.balances[a] = v
 		}
+
+		c.nonces = make(map[string]uint64)
+		for a, v := range nextState.Nonces {
+			c.nonces[a] = v
+		}
+
+		c.genesisSupply = nextState.GenesisSupply
+		c.miningIssued = nextState.MiningIssued
+		c.supply = nextState.Supply
+
+		c.confirmedTx = make(map[string]struct{})
+		for _, ab := range candidate {
+			if ab.Index == 0 {
+				continue
+			}
+			for _, tx := range ab.Transactions {
+				c.confirmedTx[tx.IdentityHash()] = struct{}{}
+			}
+		}
+
 		return true, "best", nil
 	}
+
 	return true, "fork", nil
 }
+
 func (c *Chain) Tip() *block.Block {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -689,6 +1109,7 @@ func (c *Chain) GenesisSupply() uint64  { c.mu.RLock(); defer c.mu.RUnlock(); re
 func (c *Chain) MiningIssued() uint64   { c.mu.RLock(); defer c.mu.RUnlock(); return c.miningIssued }
 func (c *Chain) IsPhase7() bool         { c.mu.RLock(); defer c.mu.RUnlock(); return c.genesisState != nil }
 func (c *Chain) IsV2() bool             { c.mu.RLock(); defer c.mu.RUnlock(); return c.protocolVersion == 2 }
+func (c *Chain) StateRoot() string      { c.mu.RLock(); defer c.mu.RUnlock(); return c.stateRoot }
 func (c *Chain) ProtocolVersion() uint8 { c.mu.RLock(); defer c.mu.RUnlock(); return c.protocolVersion }
 func (c *Chain) NetworkID() string      { c.mu.RLock(); defer c.mu.RUnlock(); return c.networkID }
 func (c *Chain) NetworkName() string    { c.mu.RLock(); defer c.mu.RUnlock(); return c.networkName }

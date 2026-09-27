@@ -16,19 +16,21 @@ import (
 )
 
 const (
-	magic              = "SYJDB001"
-	version     uint16 = 1
-	recordBlock byte   = 1
-	recordTip   byte   = 2
-	maxRecord          = 4 * 1024 * 1024
+	magic                        = "SYJDB001"
+	version               uint16 = 1
+	recordBlock           byte   = 1
+	recordTip             byte   = 2
+	recordStateCheckpoint byte   = 3
+	maxRecord                    = 4 * 1024 * 1024
 )
 
 type Store struct {
-	mu     sync.Mutex
-	dir    string
-	file   *os.File
-	blocks map[string][]byte
-	tip    string
+	mu          sync.Mutex
+	dir         string
+	file        *os.File
+	blocks      map[string][]byte
+	tip         string
+	checkpoints map[string][]byte
 }
 
 func Open(dir string) (*Store, error) {
@@ -39,7 +41,7 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, file: f, blocks: make(map[string][]byte)}
+	s := &Store{dir: dir, file: f, blocks: make(map[string][]byte), checkpoints: make(map[string][]byte)}
 	if err := s.replay(); err != nil {
 		if closeErr := f.Close(); closeErr != nil {
 			return nil, errors.Join(err, closeErr)
@@ -124,6 +126,12 @@ func (s *Store) replay() error {
 			s.blocks[b.Hash] = append([]byte(nil), payload...)
 		case recordTip:
 			s.tip = string(payload)
+		case recordStateCheckpoint:
+			if len(payload) < 65 {
+				return fmt.Errorf("database corruption at offset %d: invalid state checkpoint", offset)
+			}
+			hash := string(payload[:64])
+			s.checkpoints[hash] = append([]byte(nil), payload[64:]...)
 		default:
 			return fmt.Errorf("database corruption at offset %d: unknown record type %d", offset, typ)
 		}
@@ -227,4 +235,33 @@ func (s *Store) Flush() error {
 		return nil
 	}
 	return s.file.Sync()
+}
+
+func (s *Store) SaveStateCheckpoint(blockHash string, payload []byte) error {
+	if len(blockHash) != 64 {
+		return errors.New("state checkpoint requires a 64-character block hash")
+	}
+	if len(payload) > maxRecord-64 {
+		return errors.New("state checkpoint payload too large")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := make([]byte, 64+len(payload))
+	copy(record[:64], blockHash)
+	copy(record[64:], payload)
+	if err := s.appendRecord(recordStateCheckpoint, record); err != nil {
+		return err
+	}
+	s.checkpoints[blockHash] = append([]byte(nil), payload...)
+	return nil
+}
+
+func (s *Store) GetStateCheckpoint(blockHash string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.checkpoints[blockHash]
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), p...), true
 }

@@ -101,9 +101,21 @@ No transaction fee model is currently defined.
 ### G-013 --- State root
 
 **Severity:** High\
-**Status:** Undefined\
-No state root is part of consensus. Do not add one without an explicit
-protocol change.
+**Status:** Partially addressed by Phase 9.5; consensus activation deferred\
+
+Phase 9.5 implements a deterministic state-root commitment as a
+sidecar/checkpoint commitment. The commitment is derived from deterministic
+state snapshots and is validated during incremental state processing and
+checkpoint recovery.
+
+The current block-header consensus format does **not** contain an active
+state-root field. Therefore the Phase 9.5 state root must not be represented
+as an already-active consensus field.
+
+Any future activation of a state root in block-header consensus requires an
+explicit protocol amendment, compatibility rules, deterministic
+cross-language vectors, migration/activation rules, and network-wide
+validation.
 
 ## Networking gaps
 
@@ -171,14 +183,49 @@ present.
 
 **Severity:** High\
 **Status:** Open\
-`POST /wallet/create` returns private key material. This must not be
-retained in a production-facing node API.
+`POST /wallet/create` does not return private-key material. The API contract
+must continue to enforce this. Private-key material must not be exposed by a
+production-facing node API.
 
 ### G-023 --- Documentation drift
 
 **Severity:** Medium\
 **Status:** Open\
 README and badge counts do not match the verified Phase 3 baseline.
+
+## Phase 9.5 Gap Status
+
+Phase 9.5 addresses a subset of the state-validation and commitment gaps
+without declaring the protocol production-ready.
+
+### Addressed or materially advanced
+
+- Deterministic state snapshots and state-root computation.
+- Deterministic account ordering.
+- Bounded and hardened checkpoint encoding/decoding.
+- Truncated-checkpoint and duplicate-account rejection.
+- State-root deterministic vectors.
+- Merkle Protocol V3 implementation and regression coverage.
+- Incremental state validation.
+- Periodic state checkpoints and restart/recovery validation.
+- Legacy replay versus incremental-state differential testing.
+- V2 divergent-branch/reorganization state validation.
+- Improved block → checkpoint → durable-tip persistence ordering.
+
+### Still open or deferred
+
+- Active state-root field in the block-header consensus format.
+- Merkle V3 activation and network compatibility rules.
+- Historical V1 mempool/reorganization semantics.
+- Crash/fault-injection proof of fully atomic block/state/tip persistence.
+- Go race validation on Android/ARM64.
+- Fuzzing.
+- Empirical 400-block mining/difficulty regression.
+- Live Phase 9.5 runtime verification harness.
+- External security audit.
+- Full production protocol compatibility and migration process.
+
+**Overall project status: NOT PRODUCTION-READY / NOT MAINNET-READY.**
 
 ## Compatibility policy
 
