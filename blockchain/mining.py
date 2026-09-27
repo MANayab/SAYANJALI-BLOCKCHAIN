@@ -12,8 +12,8 @@ from __future__ import annotations
 from blockchain.block import Block
 from blockchain.consensus import ConsensusEngine
 from blockchain.mempool import Mempool
-from blockchain.transaction import Transaction
-from blockchain.utils import get_logger
+from blockchain.transaction import Transaction, COINBASE_SENDER
+from blockchain.utils import get_logger, current_timestamp
 
 logger = get_logger("blockchain.mining")
 
@@ -36,6 +36,7 @@ class Miner:
         difficulty: int,
         max_transactions: int = MAX_TRANSACTIONS_PER_BLOCK,
         block_reward: int | None = None,
+        timestamp: int | None = None,
     ) -> tuple[Block, list[str]]:
         """
         Assemble and mine a new block.
@@ -56,13 +57,15 @@ class Miner:
         selected = mempool.get_pending(limit=max_transactions)
 
         reward = self.block_reward if block_reward is None else block_reward
-        coinbase_tx = Transaction.new_coinbase_base_units(miner_address, reward)
+        mine_timestamp = current_timestamp() if timestamp is None else timestamp
+        coinbase_tx = Transaction(sender=COINBASE_SENDER, receiver=miner_address, amount_base_units=reward, timestamp=mine_timestamp)
         block_transactions: list[Transaction] = [coinbase_tx, *selected]
 
         block = Block(
             index=index,
             previous_hash=previous_hash,
             transactions=block_transactions,
+            timestamp=mine_timestamp,
         )
 
         logger.info(

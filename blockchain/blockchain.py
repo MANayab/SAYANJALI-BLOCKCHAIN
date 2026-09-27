@@ -19,7 +19,7 @@ from blockchain.mempool import Mempool
 from blockchain.mining import Miner
 from blockchain.storage import Storage
 from blockchain.transaction import Transaction
-from blockchain.utils import ValidationError, get_logger
+from blockchain.utils import current_timestamp, ValidationError, get_logger
 from blockchain.validators import (
     chain_work,
     validate_block_against_chain,
@@ -224,6 +224,7 @@ class Blockchain:
             miner_address=miner_address,
             difficulty=difficulty,
             block_reward=block_reward,
+            timestamp=max(current_timestamp(), int(self.latest_block.timestamp) + 1),
         )
 
         # Proof-of-work search happens outside the lock (it can be slow

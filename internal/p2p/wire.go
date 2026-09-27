@@ -13,7 +13,7 @@ const (
 	Magic                        = "SYJP"
 	HeaderSize                   = 20
 	ProtocolMajor          uint8 = 1
-	ProtocolMinor          uint8 = 0
+	ProtocolMinor          uint8 = 1
 	MaxFrameSize                 = 4 * 1024 * 1024
 	MaxPeerEntries               = 256
 	MaxLocatorHashes             = 32
@@ -41,16 +41,17 @@ const (
 	NEW_BLOCK
 	NEW_TRANSACTION
 	REJECT
+	HELLO_FINISH
 )
 
 func (t MessageType) String() string {
-	names := map[MessageType]string{HELLO: "HELLO", HELLO_ACK: "HELLO_ACK", GET_PEERS: "GET_PEERS", PEERS: "PEERS", GET_HEADERS: "GET_HEADERS", HEADERS: "HEADERS", GET_BLOCKS: "GET_BLOCKS", BLOCKS: "BLOCKS", NEW_BLOCK: "NEW_BLOCK", NEW_TRANSACTION: "NEW_TRANSACTION", REJECT: "REJECT"}
+	names := map[MessageType]string{HELLO: "HELLO", HELLO_ACK: "HELLO_ACK", GET_PEERS: "GET_PEERS", PEERS: "PEERS", GET_HEADERS: "GET_HEADERS", HEADERS: "HEADERS", GET_BLOCKS: "GET_BLOCKS", BLOCKS: "BLOCKS", NEW_BLOCK: "NEW_BLOCK", NEW_TRANSACTION: "NEW_TRANSACTION", REJECT: "REJECT", HELLO_FINISH: "HELLO_FINISH"}
 	if s, ok := names[t]; ok {
 		return s
 	}
 	return fmt.Sprintf("UNKNOWN(%d)", t)
 }
-func (t MessageType) Valid() bool { return t >= HELLO && t <= REJECT }
+func (t MessageType) Valid() bool { return t >= HELLO && t <= HELLO_FINISH }
 
 type Frame struct {
 	VersionMajor uint8
@@ -87,8 +88,11 @@ func EncodeFrame(f Frame) ([]byte, error) {
 	var u64 [8]byte
 	binary.BigEndian.PutUint64(u64[:], f.RequestID)
 	b.Write(u64[:])
+	if uint64(len(f.Payload)) > uint64(^uint32(0)) {
+		return nil, ErrFieldTooLarge
+	}
 	var u32 [4]byte
-	binary.BigEndian.PutUint32(u32[:], uint32(len(f.Payload)))
+	binary.BigEndian.PutUint32(u32[:], uint32(len(f.Payload))) // #nosec G115 -- payload length is bounded to uint32.
 	b.Write(u32[:])
 	b.Write(f.Payload)
 	return b.Bytes(), nil
@@ -174,7 +178,7 @@ var (
 )
 
 func isRequestType(t MessageType) bool {
-	return t == HELLO || t == GET_PEERS || t == GET_HEADERS || t == GET_BLOCKS
+	return t == HELLO || t == HELLO_FINISH || t == GET_PEERS || t == GET_HEADERS || t == GET_BLOCKS
 }
 func isResponseType(t MessageType) bool {
 	return t == HELLO_ACK || t == PEERS || t == HEADERS || t == BLOCKS || t == REJECT
@@ -186,30 +190,42 @@ type writer struct {
 	err error
 }
 
-func (w *writer) u8(v uint8) {
-	if w.err == nil {
-		w.WriteByte(v)
+func (w *writer) writeBytes(v []byte) {
+	if w.err != nil {
+		return
 	}
+	_, w.err = w.Buffer.Write(v)
+}
+
+func (w *writer) writeByte(v byte) {
+	if w.err != nil {
+		return
+	}
+	w.err = w.Buffer.WriteByte(v)
+}
+
+func (w *writer) writeString(v string) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = w.Buffer.WriteString(v)
+}
+
+func (w *writer) u8(v uint8) {
+	w.writeByte(v)
 }
 func (w *writer) u16(v uint16) {
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], v)
 	if w.err == nil {
-		_, w.err = w.Write(b[:])
+		w.writeBytes(b[:])
 	}
 }
 func (w *writer) u32(v uint32) {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], v)
 	if w.err == nil {
-		_, w.err = w.Write(b[:])
-	}
-}
-func (w *writer) u64(v uint64) {
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], v)
-	if w.err == nil {
-		_, w.err = w.Write(b[:])
+		w.writeBytes(b[:])
 	}
 }
 func (w *writer) bytes32(v []byte) {
@@ -218,17 +234,17 @@ func (w *writer) bytes32(v []byte) {
 		return
 	}
 	if w.err == nil {
-		_, w.err = w.Write(v)
+		w.writeBytes(v)
 	}
 }
 func (w *writer) raw(v []byte, max int) {
-	if len(v) > max {
+	if max < 0 || uint64(max) > uint64(^uint32(0)) || uint64(len(v)) > uint64(max) {
 		w.err = ErrFieldTooLarge
 		return
 	}
-	w.u32(uint32(len(v)))
+	w.u32(uint32(len(v))) // #nosec G115 -- length is bounded to uint32 before conversion.
 	if w.err == nil {
-		_, w.err = w.Write(v)
+		w.writeBytes(v)
 	}
 }
 func (w *writer) str(v string) {
@@ -236,9 +252,9 @@ func (w *writer) str(v string) {
 		w.err = ErrFieldTooLarge
 		return
 	}
-	w.u16(uint16(len(v)))
+	w.u16(uint16(len(v))) // #nosec G115 -- bounded by MaxStringSize (256).
 	if w.err == nil {
-		_, w.err = w.WriteString(v)
+		w.writeString(v)
 	}
 }
 
@@ -257,7 +273,6 @@ func (r *reader) u8() uint8 {
 }
 func (r *reader) u16() uint16 { var b [2]byte; r.read(b[:]); return binary.BigEndian.Uint16(b[:]) }
 func (r *reader) u32() uint32 { var b [4]byte; r.read(b[:]); return binary.BigEndian.Uint32(b[:]) }
-func (r *reader) u64() uint64 { var b [8]byte; r.read(b[:]); return binary.BigEndian.Uint64(b[:]) }
 func (r *reader) read(b []byte) {
 	if r.err == nil {
 		_, r.err = io.ReadFull(r.r, b)
@@ -269,7 +284,7 @@ func (r *reader) raw(max int) []byte {
 	if r.err != nil {
 		return nil
 	}
-	if n > uint32(max) {
+	if max < 0 || (max < int(^uint32(0)) && n > uint32(max)) {
 		r.err = ErrFieldTooLarge
 		return nil
 	}

@@ -117,6 +117,7 @@ def test_replace_chain_reorg_updates_balances_correctly(blockchain: Blockchain):
             mempool=blockchain.mempool,
             miner_address=competing_miner.address,
             difficulty=required,
+            timestamp=int(candidate[-1].timestamp) + 1,
         )
         candidate.append(new_block)
 
@@ -156,6 +157,7 @@ def test_replace_chain_removes_confirmed_transactions_from_mempool(blockchain: B
         mempool=blockchain.mempool,
         miner_address=miner.address,
         difficulty=1,
+        timestamp=int(candidate[-1].timestamp) + 1,
     )
     candidate.append(new_block)
 

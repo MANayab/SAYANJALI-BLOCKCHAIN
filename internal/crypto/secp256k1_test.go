@@ -131,13 +131,13 @@ func TestSignatureBoundaryValidation(t *testing.T) {
 	}
 }
 
-func TestHighSAcceptedByProtocol(t *testing.T) {
+func TestHighSRejectedByProtocol(t *testing.T) {
 	priv := mustDecodeHex(testPrivateKeyHex)
 	pub, err := PublicKeyFromPrivate(priv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	message := "high-s compatibility"
+	message := "high-s rejection"
 	sig, err := SignECDSA(priv, message)
 	if err != nil {
 		t.Fatal(err)
@@ -148,8 +148,8 @@ func TestHighSAcceptedByProtocol(t *testing.T) {
 		t.Fatal("failed to construct high-S value")
 	}
 	copy(sig[32:], pad32(highS))
-	if !VerifyECDSA(hex.EncodeToString(pub), message, sig) {
-		t.Fatal("protocol verifier rejected a valid high-S ECDSA signature")
+	if VerifyECDSA(hex.EncodeToString(pub), message, sig) {
+		t.Fatal("protocol verifier accepted a high-S ECDSA signature")
 	}
 }
 

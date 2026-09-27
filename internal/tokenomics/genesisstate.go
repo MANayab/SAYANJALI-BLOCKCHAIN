@@ -67,7 +67,7 @@ func Load(path string) (GenesisState, error) {
 	if path == "" {
 		return GenesisState{}, errors.New("phase 7 genesis state path is required")
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied local genesis-state configuration path.
 	if err != nil {
 		return GenesisState{}, err
 	}

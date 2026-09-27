@@ -95,6 +95,12 @@ func VerifyECDSA(publicKeyHex, message string, signature []byte) bool {
 	if s.SetByteSlice(signature[32:]) || s.IsZero() {
 		return false
 	}
+	// Consensus accepts only canonical low-S signatures. Without this check
+	// the mathematically equivalent (r, N-s) signature produces a distinct
+	// V1 transaction hash and can create identity-level malleability.
+	if s.IsOverHalfOrder() {
+		return false
+	}
 	sig := secp256k1ecdsa.NewSignature(&r, &s)
 	hash := SHA256Bytes([]byte(message))
 	return sig.Verify(hash[:], publicKey)

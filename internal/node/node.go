@@ -63,7 +63,7 @@ func LoadConfig(path string, defaults Config) (Config, error) {
 	if statErr == nil && info.Mode().Perm()&0077 != 0 {
 		return defaults, fmt.Errorf("config file %s has insecure permissions %04o; require owner-only access", path, info.Mode().Perm())
 	}
-	b, e := os.ReadFile(path)
+	b, e := os.ReadFile(path) // #nosec G304 -- path is the operator-supplied local node configuration path.
 	if os.IsNotExist(e) {
 		return defaults, nil
 	}
@@ -125,7 +125,6 @@ type Node struct {
 	net      *p2pnode.Network
 	ctx      context.Context
 	cancel   context.CancelFunc
-	wg       sync.WaitGroup
 	stopOnce sync.Once
 	done     chan struct{}
 	running  atomic.Bool
@@ -147,6 +146,8 @@ func (c Config) ValidateTransport() error {
 		if c.P2PTLSCertFile == "" || c.P2PTLSKeyFile == "" || c.P2PTLSCAFile == "" {
 			return errors.New("P2P TLS requires certificate, key, and CA files")
 		}
+	} else if !isLoopbackListenAddress(c.ListenAddress) {
+		return errors.New("P2P TLS is mandatory for non-loopback/public transport")
 	}
 	return nil
 }
@@ -164,9 +165,12 @@ func New(cfg Config) *Node {
 	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{})
 	return &Node{cfg: cfg, log: slog.New(h), done: make(chan struct{})}
 }
-func (n *Node) Start(ctx context.Context) error {
+func (n *Node) Start(ctx context.Context) (retErr error) {
 	if n.cfg.ProtocolVersion != 0 && n.cfg.ProtocolVersion != 1 && n.cfg.ProtocolVersion != 2 {
 		return errors.New("unsupported consensus protocol version")
+	}
+	if n.cfg.ProtocolVersion != 2 && !isLoopbackListenAddress(n.cfg.ListenAddress) {
+		return errors.New("legacy V1 consensus is restricted to loopback/private development; public nodes require protocol version 2")
 	}
 	if n.cfg.ProtocolVersion != 2 && strings.HasPrefix(n.cfg.NetworkName, networkid.V2WirePrefix) {
 		return errors.New("V2 network identity requires consensus protocol version 2")
@@ -191,11 +195,21 @@ func (n *Node) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	keepStoreOpen := false
+	defer func() {
+		if keepStoreOpen {
+			return
+		}
+		if closeErr := st.Close(); closeErr != nil && retErr == nil {
+			retErr = closeErr
+		}
+	}()
+
 	n.store = st
 	var ch *chain.Chain
 	if n.cfg.ProtocolVersion == 2 {
 		if n.cfg.Phase7GenesisStatePath == "" || n.cfg.Phase7GenesisCommitment == "" {
-			st.Close()
 			return errors.New("V2 network requires GenesisState path and commitment")
 		}
 		if n.cfg.GenesisNetworkName == "" {
@@ -203,84 +217,79 @@ func (n *Node) Start(ctx context.Context) error {
 		}
 		gs, err := tokenomics.Load(n.cfg.Phase7GenesisStatePath)
 		if err != nil {
-			st.Close()
 			return err
 		}
 		commitment, err := gs.Commitment()
 		if err != nil {
-			st.Close()
 			return err
 		}
 		if commitment != n.cfg.Phase7GenesisCommitment {
-			st.Close()
 			return errors.New("V2 GenesisState commitment mismatch")
 		}
 		if n.cfg.GenesisNetworkName == tokenomics.Phase7NetworkName && commitment != "36351980711cd88fe6ff134f0e4e858ee1a4572a9f44b7bde9f57213e7f1eb82" {
-			st.Close()
 			return errors.New("audited Phase 7 private-testnet GenesisState commitment mismatch")
 		}
 		g, err := genesis.Build()
 		if err != nil {
-			st.Close()
 			return err
 		}
 		effectiveID, _, err := networkid.EffectiveNetworkID(networkid.Inputs{ConsensusProtocolVersion: 2, GenesisStateCommitment: commitment, HistoricalGenesisHash: g.Hash, NetworkName: n.cfg.GenesisNetworkName})
 		if err != nil {
-			st.Close()
 			return err
 		}
 		if n.cfg.NetworkID != effectiveID {
-			st.Close()
 			return errors.New("V2 EffectiveNetworkID mismatch")
 		}
 		if n.cfg.GenesisNetworkName == tokenomics.Phase7NetworkName && effectiveID != "237a1934769295c63fe47771a4996b17c3899e52f6bacf79ed7edefec90eaaf3" {
-			st.Close()
 			return errors.New("audited Phase 7 private-testnet EffectiveNetworkID mismatch")
 		}
 		wire, err := networkid.WireNetworkName(effectiveID)
 		if err != nil {
-			st.Close()
 			return err
 		}
 		if n.cfg.NetworkName != wire {
-			st.Close()
 			return errors.New("V2 network name mismatch")
 		}
-		ch, err = chain.OpenV2WithGenesisState(st, gs, effectiveID, wire)
+		opened, openErr := chain.OpenV2WithGenesisState(st, gs, effectiveID, wire)
+		if openErr != nil {
+			return openErr
+		}
+		ch = opened
 	} else if n.cfg.NetworkName == tokenomics.Phase7NetworkName {
 		if n.cfg.Phase7GenesisStatePath == "" {
-			st.Close()
-			return errors.New("Phase 7 network requires a genesis state path")
+			return errors.New("phase 7 network requires a genesis state path")
 		}
 		if n.cfg.Phase7GenesisCommitment == "" {
-			st.Close()
-			return errors.New("Phase 7 network requires a genesis state commitment")
+			return errors.New("phase 7 network requires a genesis state commitment")
 		}
 		gs, err := tokenomics.Load(n.cfg.Phase7GenesisStatePath)
 		if err != nil {
-			st.Close()
 			return err
 		}
 		commitment, err := gs.Commitment()
 		if err != nil {
-			st.Close()
 			return err
 		}
 		if commitment != n.cfg.Phase7GenesisCommitment {
-			st.Close()
-			return errors.New("Phase 7 genesis commitment mismatch")
+			return errors.New("phase 7 genesis commitment mismatch")
 		}
-		ch, err = chain.OpenWithGenesisState(st, gs)
+		opened, openErr := chain.OpenWithGenesisState(st, gs)
+		if openErr != nil {
+			return openErr
+		}
+		ch = opened
 	} else {
-		ch, err = chain.Open(st)
+		opened, openErr := chain.Open(st)
+		if openErr != nil {
+			return openErr
+		}
+		ch = opened
 	}
 	if err != nil {
-		st.Close()
 		return err
 	}
 	g, _ := genesis.Build()
 	if ch.TipHash() == "" || g.Hash == "" {
-		st.Close()
 		return errors.New("genesis initialization failure")
 	}
 	n.chain = ch
@@ -289,13 +298,13 @@ func (n *Node) Start(ctx context.Context) error {
 		n.v2pool = mempool.NewV2(n.cfg.MempoolMax)
 	}
 	gHash := g.Hash
-	n.net = p2pnode.New(p2pnode.Config{ProtocolVersion: n.cfg.ProtocolVersion, NetworkName: n.cfg.NetworkName, GenesisHash: gHash, NodeID: id.NodeID, PublicKeyHex: id.PublicKeyHex, V2Pool: n.v2pool, AdvertisedAddress: n.cfg.AdvertisedAddress, ListenAddress: n.cfg.ListenAddress, Seeds: n.cfg.Seeds, MaxPeers: n.cfg.MaxPeers, Logger: n.log, Identity: *id}, ch, n.pool)
+	n.net = p2pnode.New(p2pnode.Config{ProtocolVersion: n.cfg.ProtocolVersion, NetworkName: n.cfg.NetworkName, GenesisHash: gHash, NodeID: id.NodeID, PublicKeyHex: id.PublicKeyHex, V2Pool: n.v2pool, AdvertisedAddress: n.cfg.AdvertisedAddress, ListenAddress: n.cfg.ListenAddress, Seeds: n.cfg.Seeds, MaxPeers: n.cfg.MaxPeers, Logger: n.log, Identity: *id, UseTLS: n.cfg.P2PUseTLS, TLSCertFile: n.cfg.P2PTLSCertFile, TLSKeyFile: n.cfg.P2PTLSKeyFile, TLSCAFile: n.cfg.P2PTLSCAFile, TLSServerName: n.cfg.P2PTLSServerName}, ch, n.pool)
 	n.ctx, n.cancel = context.WithCancel(ctx)
 	if err := n.net.Start(n.ctx); err != nil {
-		st.Close()
 		return err
 	}
 	n.running.Store(true)
+	keepStoreOpen = true
 	n.log.Info("SYJ node started", "height", ch.Height(), "tip", ch.TipHash(), "network", n.cfg.NetworkName)
 	return nil
 }
@@ -394,10 +403,10 @@ func MineNext(ch *chain.Chain, receiver string, txs []transaction.Transaction) (
 	if !ok {
 		return nil, errors.New("no reward remains")
 	}
-	// Consensus timestamps are deterministic relative to the active chain.
-	// The local wall clock is not allowed to manufacture a timestamp that peers
-	// would reject under the chain-history future-time bound.
-	timestamp := tip.Timestamp + float64(protocol.TargetBlockTimeSeconds)
+	// Mining timestamps are deterministic consensus values.
+	// Parent + 1 is greater than the parent and median-time-past,
+	// while remaining inside the deterministic future-time bound.
+	timestamp := tip.Timestamp + 1
 	var coin transaction.Transaction
 	var err error
 	if ch.IsV2() {

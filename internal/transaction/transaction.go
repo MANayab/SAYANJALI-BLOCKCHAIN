@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/canonicaljson"
@@ -105,6 +106,9 @@ func (t Transaction) Verify() bool {
 	return corecrypto.VerifyECDSAHex(t.SenderPublicKey, msg, t.Signature)
 }
 func (t Transaction) Validate() error {
+	if math.IsNaN(t.Timestamp) || math.IsInf(t.Timestamp, 0) || t.Timestamp < 0 || t.Timestamp != float64(int64(t.Timestamp)) {
+		return errors.New("transaction timestamp must be finite integer seconds")
+	}
 	if t.AmountBaseUnits == 0 {
 		return errors.New("SYJ amount must be positive")
 	}

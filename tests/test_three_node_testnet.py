@@ -56,7 +56,9 @@ def test_three_node_discovery_propagation_and_convergence(three_nodes):
     sa,sb,sc=[httpx.get(x+"/network/status").json() for x in bases]
     assert len({sa["node_id"],sb["node_id"],sc["node_id"]})==3
 
-    wallet=httpx.post(a+"/wallet/create").json()
+    from blockchain.wallet import Wallet
+    wallet_obj=Wallet.create()
+    wallet={"address":wallet_obj.address}
     mined=httpx.post(a+"/mine",json={"miner_address":wallet["address"]})
     assert mined.status_code==200
     assert wait_for(lambda: httpx.get(c+"/network/status").json()["chain_length"]==2, 10)
@@ -65,7 +67,7 @@ def test_three_node_discovery_propagation_and_convergence(three_nodes):
     tx=httpx.post(a+"/transaction/create",json={"sender":wallet["address"],"receiver":receiver["address"],"amount":"10"}).json()
     from blockchain.transaction import Transaction
     from blockchain.wallet import Wallet
-    t=Transaction.from_dict(tx); t.sign(Wallet.from_private_key(wallet["private_key"]))
+    t=Transaction.from_dict(tx); t.sign(wallet_obj)
     submitted=httpx.post(a+"/transaction/submit",json=t.to_dict())
     assert submitted.status_code==200 and submitted.json()["accepted"]
     assert wait_for(lambda: any(x["tx_hash"]==t.tx_hash for x in httpx.get(c+"/transactions/pending").json()), 10)

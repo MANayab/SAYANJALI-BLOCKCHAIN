@@ -43,9 +43,9 @@ def deterministic_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def current_timestamp() -> float:
-    """Return the current UNIX timestamp as a float."""
-    return time.time()
+def current_timestamp() -> int:
+    """Return consensus time as whole Unix seconds."""
+    return int(time.time())
 
 
 def merkle_root(transaction_hashes: Iterable[str]) -> str:

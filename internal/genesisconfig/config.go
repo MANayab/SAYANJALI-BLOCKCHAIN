@@ -265,7 +265,7 @@ func LoadConfig(path string) (Config, error) {
 	if path == "" {
 		return Config{}, errors.New("config path is required")
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied local genesis configuration path.
 	if err != nil {
 		return Config{}, err
 	}
@@ -287,7 +287,7 @@ func LoadArtifact(path string) (Artifact, error) {
 	if path == "" {
 		return Artifact{}, errors.New("artifact path is required")
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied local genesis artifact path.
 	if err != nil {
 		return Artifact{}, err
 	}

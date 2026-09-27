@@ -80,8 +80,8 @@ func TestRequiredNextDifficultyBeforeRetargetWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b1 := &block.Block{Header: block.Header{Index: 1, Difficulty: 4, Timestamp: 100.5, PreviousHash: gen.Hash}}
-	b2 := &block.Block{Header: block.Header{Index: 2, Difficulty: 4, Timestamp: 200.75, PreviousHash: b1.Hash}}
+	b1 := &block.Block{Header: block.Header{Index: 1, Difficulty: 4, Timestamp: 100, PreviousHash: gen.Hash}}
+	b2 := &block.Block{Header: block.Header{Index: 2, Difficulty: 4, Timestamp: 200, PreviousHash: b1.Hash}}
 	for _, b := range []*block.Block{gen, b1, b2} {
 		if b.Hash == "" {
 			if err := b.Recompute(); err != nil {

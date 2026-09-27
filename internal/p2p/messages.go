@@ -25,6 +25,11 @@ type HelloAck struct {
 	GenesisHash, PublicKey, EchoChallenge, Challenge, Signature []byte
 	Capabilities                                                uint32
 }
+type HelloFinish struct {
+	NodeID                   string
+	PublicKey                []byte
+	EchoChallenge, Signature []byte
+}
 type GetPeers struct {
 	StartAfter string
 	Limit      uint16
@@ -57,12 +62,6 @@ type Reject struct {
 
 func wrap(t MessageType, req uint64, payload []byte) ([]byte, error) {
 	return EncodeFrame(Frame{ProtocolMajor, ProtocolMinor, t, req, payload})
-}
-func ensureHash32(b []byte) error {
-	if len(b) != 32 {
-		return ErrMalformedPayload
-	}
-	return nil
 }
 func ensurePub64(b []byte) error {
 	if len(b) != 64 {
@@ -104,12 +103,12 @@ func EncodeHello(v Hello, req uint64) ([]byte, error) {
 	if len(v.Challenge) != 32 {
 		w.err = ErrMalformedPayload
 	} else {
-		w.Write(v.Challenge)
+		w.writeBytes(v.Challenge)
 	}
 	if ensureSig64(v.Signature) != nil {
 		w.err = ErrMalformedPayload
 	} else {
-		w.Write(v.Signature)
+		w.writeBytes(v.Signature)
 	}
 	return wrap(HELLO, req, w.Bytes())
 }
@@ -156,13 +155,13 @@ func EncodeHelloAck(v HelloAck, req uint64) ([]byte, error) {
 	if len(v.EchoChallenge) != 32 || len(v.Challenge) != 32 {
 		w.err = ErrMalformedPayload
 	} else {
-		w.Write(v.EchoChallenge)
-		w.Write(v.Challenge)
+		w.writeBytes(v.EchoChallenge)
+		w.writeBytes(v.Challenge)
 	}
 	if ensureSig64(v.Signature) != nil {
 		w.err = ErrMalformedPayload
 	} else {
-		w.Write(v.Signature)
+		w.writeBytes(v.Signature)
 	}
 	return wrap(HELLO_ACK, req, w.Bytes())
 }
@@ -185,6 +184,41 @@ func DecodeHelloAck(f Frame) (HelloAck, error) {
 	}
 	if v.ProtocolName != "sayanjali-p2p" || v.VersionMajor != ProtocolMajor || v.VersionMinor != ProtocolMinor || len(v.NodeID) == 0 || len(v.AdvertisedAddress) == 0 || checkCaps(v.Capabilities) != nil {
 		return HelloAck{}, ErrMalformedPayload
+	}
+	return v, nil
+}
+
+func EncodeHelloFinish(v HelloFinish, req uint64) ([]byte, error) {
+	var w writer
+	w.str(v.NodeID)
+	if len(v.PublicKey) != 64 {
+		w.err = ErrMalformedPayload
+	} else {
+		w.raw(v.PublicKey, 64)
+	}
+	if len(v.EchoChallenge) != 32 {
+		w.err = ErrMalformedPayload
+	} else {
+		w.writeBytes(v.EchoChallenge)
+	}
+	if len(v.Signature) != 64 {
+		w.err = ErrMalformedPayload
+	} else {
+		w.writeBytes(v.Signature)
+	}
+	return wrap(HELLO_FINISH, req, w.Bytes())
+}
+func DecodeHelloFinish(f Frame) (HelloFinish, error) {
+	if f.Type != HELLO_FINISH {
+		return HelloFinish{}, ErrMalformedPayload
+	}
+	r := reader{r: bytes.NewReader(f.Payload)}
+	v := HelloFinish{NodeID: r.str(), PublicKey: r.raw(64), EchoChallenge: r.fixed(32), Signature: r.fixed(64)}
+	if err := r.done(); err != nil {
+		return HelloFinish{}, err
+	}
+	if v.NodeID == "" || len(v.PublicKey) != 64 || len(v.EchoChallenge) != 32 || len(v.Signature) != 64 {
+		return HelloFinish{}, ErrMalformedPayload
 	}
 	return v, nil
 }
@@ -213,11 +247,11 @@ func DecodeGetPeers(f Frame) (GetPeers, error) {
 	return v, nil
 }
 func EncodePeers(v Peers, req uint64) ([]byte, error) {
-	var w writer
 	if len(v.Entries) > MaxPeerEntries {
-		w.err = ErrCountTooLarge
+		return nil, ErrCountTooLarge
 	}
-	w.u16(uint16(len(v.Entries)))
+	var w writer
+	w.u16(uint16(len(v.Entries))) // #nosec G115 -- bounded by MaxPeerEntries (256).
 	for _, p := range v.Entries {
 		if p.Port == 0 {
 			w.err = ErrMalformedPayload
@@ -261,15 +295,15 @@ func DecodePeers(f Frame) (Peers, error) {
 }
 
 func EncodeGetHeaders(v GetHeaders, req uint64) ([]byte, error) {
-	var w writer
 	if len(v.Locator) == 0 || len(v.Locator) > MaxLocatorHashes {
-		w.err = ErrCountTooLarge
+		return nil, ErrCountTooLarge
 	}
-	w.u8(uint8(len(v.Locator)))
+	var w writer
+	w.u8(uint8(len(v.Locator))) // #nosec G115 -- bounded by MaxLocatorHashes (32).
 	for _, h := range v.Locator {
-		w.Write(h[:])
+		w.writeBytes(h[:])
 	}
-	w.Write(v.StopHash[:])
+	w.writeBytes(v.StopHash[:])
 	if v.MaxCount == 0 || v.MaxCount > MaxHeaders {
 		w.err = ErrCountTooLarge
 	}
@@ -302,11 +336,11 @@ func DecodeGetHeaders(f Frame) (GetHeaders, error) {
 	return v, nil
 }
 func EncodeHeaders(v Headers, req uint64) ([]byte, error) {
-	var w writer
 	if len(v.Items) > MaxHeaders {
-		w.err = ErrCountTooLarge
+		return nil, ErrCountTooLarge
 	}
-	w.u16(uint16(len(v.Items)))
+	var w writer
+	w.u16(uint16(len(v.Items))) // #nosec G115 -- bounded by MaxHeaders (2048).
 	for _, h := range v.Items {
 		w.raw(h, 4096)
 	}
@@ -332,13 +366,13 @@ func DecodeHeaders(f Frame) (Headers, error) {
 }
 
 func EncodeGetBlocks(v GetBlocks, req uint64) ([]byte, error) {
-	var w writer
 	if len(v.Hashes) == 0 || len(v.Hashes) > MaxBlockIDs {
-		w.err = ErrCountTooLarge
+		return nil, ErrCountTooLarge
 	}
-	w.u16(uint16(len(v.Hashes)))
+	var w writer
+	w.u16(uint16(len(v.Hashes))) // #nosec G115 -- bounded by MaxBlockIDs (128).
 	for _, h := range v.Hashes {
-		w.Write(h[:])
+		w.writeBytes(h[:])
 	}
 	return wrap(GET_BLOCKS, req, w.Bytes())
 }
@@ -363,11 +397,11 @@ func DecodeGetBlocks(f Frame) (GetBlocks, error) {
 	return v, nil
 }
 func EncodeBlocks(v Blocks, req uint64) ([]byte, error) {
-	var w writer
 	if len(v.Items) > MaxBlocks {
-		w.err = ErrCountTooLarge
+		return nil, ErrCountTooLarge
 	}
-	w.u16(uint16(len(v.Items)))
+	var w writer
+	w.u16(uint16(len(v.Items))) // #nosec G115 -- bounded by MaxBlocks (32).
 	for _, b := range v.Items {
 		w.raw(b, MaxBlockPayload)
 	}

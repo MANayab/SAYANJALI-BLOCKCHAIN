@@ -5,7 +5,7 @@ import "testing"
 func TestHandshakeSigningBytesDeterministic(t *testing.T) {
 	var h [32]byte
 	var pub [64]byte
-	v := Hello{ProtocolName: "sayanjali-p2p", VersionMajor: 1, VersionMinor: 0, NetworkName: "sayanjali-mainnet-mvp", NodeID: "n", AdvertisedAddress: "127.0.0.1:3030", GenesisHash: h[:], PublicKey: pub[:], Challenge: h[:], Capabilities: 7}
+	v := Hello{ProtocolName: "sayanjali-p2p", VersionMajor: 1, VersionMinor: 1, NetworkName: "sayanjali-mainnet-mvp", NodeID: "n", AdvertisedAddress: "127.0.0.1:3030", GenesisHash: h[:], PublicKey: pub[:], Challenge: h[:], Capabilities: 7}
 	a, e := HelloSigningBytes(v)
 	if e != nil {
 		t.Fatal(e)

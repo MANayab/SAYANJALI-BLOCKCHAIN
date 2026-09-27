@@ -133,7 +133,6 @@ def create_wallet() -> WalletCreateResponse:
     return WalletCreateResponse(
         address=wallet.address,
         public_key=wallet.public_key_hex,
-        private_key=wallet.private_key_hex,
     )
 
 

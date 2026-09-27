@@ -1,11 +1,11 @@
-"""Small independent reference encoder for the frozen SYJ P2P v1.0 grammar.
+"""Small independent reference encoder for the frozen SYJ P2P v1.1 grammar.
 
 This is a wire-format test oracle only. It does not implement node/network behavior.
 """
 from __future__ import annotations
 import struct
 
-MAGIC=b"SYJP"; MAJOR=1; MINOR=0; HEADER=20; MAX_FRAME=4*1024*1024
+MAGIC=b"SYJP"; MAJOR=1; MINOR=1; HEADER=20; MAX_FRAME=4*1024*1024
 TYPES={"HELLO":1,"HELLO_ACK":2,"GET_PEERS":3,"PEERS":4,"GET_HEADERS":5,"HEADERS":6,"GET_BLOCKS":7,"BLOCKS":8,"NEW_BLOCK":9,"NEW_TRANSACTION":10,"REJECT":11}
 CAP_BLOCKS=1; CAP_TRANSACTIONS=2; CAP_SYNC=4
 
@@ -23,7 +23,7 @@ def frame(name,req,payload):
 
 def hello(ack=False):
  h=bytes(range(32)); pub=bytes(range(64)); ch=bytes([7])*32; sig=bytes([8])*64
- p=s("sayanjali-p2p")+u8(1)+u8(0)+s("sayanjali-mainnet-mvp")+h+s("node-a")+raw(pub,64)+s("127.0.0.1:3030")+u32(7)
+ p=s("sayanjali-p2p")+u8(1)+u8(1)+s("sayanjali-mainnet-mvp")+h+s("node-a")+raw(pub,64)+s("127.0.0.1:3030")+u32(7)
  if ack: p+=ch+bytes([9])*32+sig; return frame("HELLO_ACK",1,p)
  return frame("HELLO",1,p+ch+sig)
 

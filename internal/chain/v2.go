@@ -58,9 +58,6 @@ func validateNextV2(b *block.Block, prefix []*block.Block, cfg protocol.Difficul
 	if !ok {
 		return errors.New("no issuance remains")
 	}
-	if err := validateV2TransactionsAndState(prefix, b, genesisState, networkID, reward); err != nil {
-		return err
-	}
 	expected, err := requiredNextDifficulty(prefix, cfg)
 	if err != nil {
 		return err
@@ -69,6 +66,9 @@ func validateNextV2(b *block.Block, prefix []*block.Block, cfg protocol.Difficul
 		return fmt.Errorf("difficulty %d != required %d", b.Difficulty, expected)
 	}
 	if err := consensus.ValidatePoW(b, expected); err != nil {
+		return err
+	}
+	if err := validateV2TransactionsAndState(prefix, b, genesisState, networkID, reward); err != nil {
 		return err
 	}
 	return nil
@@ -97,22 +97,6 @@ func initialV2State(genesisState *tokenomics.GenesisState) (state.Balances, map[
 		return nil, nil, 0, errors.New("genesis supply mismatch")
 	}
 	return balances, nonces, genesisSupply, nil
-}
-
-func cloneBalances(in state.Balances) state.Balances {
-	out := make(state.Balances, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-func cloneNonces(in map[string]uint64) map[string]uint64 {
-	out := make(map[string]uint64, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }
 
 func v2CoinbaseValid(tx transaction.Transaction, network string, reward uint64) error {

@@ -22,7 +22,7 @@ class TransactionOut(BaseModel):
     receiver: str
     amount: str
     amount_base_units: int
-    timestamp: float
+    timestamp: int
     sender_public_key: Optional[str] = None
     signature: Optional[str] = None
     tx_hash: str
@@ -33,7 +33,7 @@ class BlockOut(BaseModel):
 
     index: int
     previous_hash: str
-    timestamp: float
+    timestamp: int
     nonce: int
     difficulty: int
     merkle_root: str
@@ -53,10 +53,8 @@ class WalletCreateResponse(BaseModel):
 
     address: str
     public_key: str
-    private_key: str
     warning: str = (
-        "Store your private_key securely. It will never be shown again "
-        "and cannot be recovered if lost."
+        "The API never returns private key material. Create/import wallets in a secure local client."
     )
 
 
@@ -99,7 +97,7 @@ class TransactionSubmitRequest(BaseModel):
     receiver: str
     amount: Decimal = Field(gt=0)
     amount_base_units: Optional[int] = Field(default=None, gt=0)
-    timestamp: float
+    timestamp: int
     sender_public_key: str
     signature: str
 

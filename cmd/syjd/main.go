@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/node"
 )
@@ -29,15 +30,19 @@ func generateAPIAuthToken() (string, error) {
 // authedRequest issues an HTTP request carrying the configured bearer token,
 // if one is set. Mutating CLI subcommands (stop, mine) use this instead of
 // the bare http.Post/http.Get calls the read-only subcommands still use.
+var apiHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 func authedRequest(method, url, token string) (*http.Response, error) {
-	req, err := http.NewRequest(method, url, nil)
+	req, err := http.NewRequest(method, url, nil) // #nosec G704 -- URL is constructed from the locally loaded node API configuration.
 	if err != nil {
 		return nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	return http.DefaultClient.Do(req)
+	return apiHTTPClient.Do(req) // #nosec G704 -- destination is the locally configured SYJ node API endpoint.
 }
 
 func apiBaseURL(cfg node.Config) string {
@@ -162,7 +167,7 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		resp, err := http.Get(apiBaseURL(cfg) + "/status")
+		resp, err := apiHTTPClient.Get(apiBaseURL(cfg) + "/status") // #nosec G704 -- destination is the locally loaded node API configuration.
 		if err != nil {
 			fatal(err)
 		}
@@ -186,7 +191,7 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		resp, err := http.Get(apiBaseURL(cfg) + "/peers")
+		resp, err := apiHTTPClient.Get(apiBaseURL(cfg) + "/peers") // #nosec G704 -- destination is the locally loaded node API configuration.
 		if err != nil {
 			fatal(err)
 		}

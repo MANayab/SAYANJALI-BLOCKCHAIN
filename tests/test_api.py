@@ -53,7 +53,7 @@ def test_create_wallet(client: TestClient):
     assert response.status_code == 200
     body = response.json()
     assert body["address"].startswith("SYJ")
-    assert "private_key" in body
+    assert "private_key" not in body
 
 
 def test_wallet_balance_for_fresh_address(client: TestClient):
@@ -74,8 +74,10 @@ def test_full_transaction_and_mining_flow(client: TestClient):
     from blockchain.transaction import Transaction
     from blockchain.wallet import Wallet
 
-    sender = client.post("/wallet/create").json()
-    receiver = client.post("/wallet/create").json()
+    sender_wallet = Wallet.create()
+    receiver_wallet = Wallet.create()
+    sender = {"address": sender_wallet.address}
+    receiver = {"address": receiver_wallet.address}
 
     # Fund the sender first via mining.
     mine_response = client.post("/mine", json={"miner_address": sender["address"]})
@@ -91,7 +93,7 @@ def test_full_transaction_and_mining_flow(client: TestClient):
     ).json()
 
     # Client-side signing -- no private key ever leaves this process.
-    wallet = Wallet.from_private_key(sender["private_key"])
+    wallet = sender_wallet
     tx = Transaction(
         sender=sender["address"],
         receiver=receiver["address"],

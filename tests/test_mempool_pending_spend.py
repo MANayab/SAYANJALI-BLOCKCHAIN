@@ -282,6 +282,7 @@ def test_reorg_preserves_confirmed_balance_authority(blockchain: Blockchain):
         new_block, _ = engine.mine_block(
             index=i, previous_hash=candidate[-1].hash, mempool=blockchain.mempool,
             miner_address=other_miner.address, difficulty=required,
+            timestamp=int(candidate[-1].timestamp) + 1,
         )
         candidate.append(new_block)
 

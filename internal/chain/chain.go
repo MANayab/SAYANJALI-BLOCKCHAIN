@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -70,10 +71,6 @@ func OpenWithGenesisState(store *storage.Store, genesisState tokenomics.GenesisS
 	return openWithProtocol(store, &genesisState, 1, "", tokenomics.Phase7NetworkName)
 }
 
-func open(store *storage.Store, genesisState *tokenomics.GenesisState) (*Chain, error) {
-	return openWithProtocol(store, genesisState, 1, "", tokenomics.Phase7NetworkName)
-}
-
 func openWithProtocol(store *storage.Store, genesisState *tokenomics.GenesisState, protocolVersion uint8, networkID, networkName string) (*Chain, error) {
 	c := &Chain{
 		store:           store,
@@ -105,7 +102,6 @@ func openWithProtocol(store *storage.Store, genesisState *tokenomics.GenesisStat
 			return nil, err
 		}
 		c.blocks[g.Hash] = g
-		bs = []*block.Block{g}
 	}
 	genesisBlock, ok := c.blocks[g.Hash]
 	if !ok {
@@ -187,9 +183,6 @@ func validateNext(b *block.Block, prefix []*block.Block, cfg protocol.Difficulty
 	if !ok {
 		return errors.New("no issuance remains")
 	}
-	if err := transactionsValid(b, reward); err != nil {
-		return err
-	}
 	expected, err := requiredNextDifficulty(prefix, cfg)
 	if err != nil {
 		return err
@@ -198,6 +191,9 @@ func validateNext(b *block.Block, prefix []*block.Block, cfg protocol.Difficulty
 		return fmt.Errorf("difficulty %d != required %d", b.Difficulty, expected)
 	}
 	if err := consensus.ValidatePoW(b, expected); err != nil {
+		return err
+	}
+	if err := transactionsValid(prefix, b, reward); err != nil {
 		return err
 	}
 	if err := stateTransition(prefix, b, reward, genesisState); err != nil {
@@ -223,8 +219,8 @@ func validateTimestamp(timestamp float64, prefix []*block.Block) error {
 	if len(prefix) == 0 {
 		return errors.New("timestamp validation requires a parent")
 	}
-	if timestamp != timestamp || timestamp < 0 || timestamp > float64(^uint64(0)) {
-		return errors.New("invalid block timestamp")
+	if timestamp != timestamp || timestamp < 0 || timestamp > float64(^uint64(0)) || timestamp != float64(int64(timestamp)) {
+		return errors.New("invalid block timestamp: consensus timestamps must be integer seconds")
 	}
 	parent := prefix[len(prefix)-1].Timestamp
 	if timestamp <= parent {
@@ -368,13 +364,18 @@ func replayBalances(ch []*block.Block, genesisState *tokenomics.GenesisState) (s
 	}
 	var miningIssued uint64
 	var supply = genesisSupply
+	seenTx := make(map[string]struct{})
 	for _, b := range ch {
 		if b.Index == 0 {
 			continue
 		}
 		for _, tx := range b.Transactions {
-			if tx.TxHash != "" && tx.Sender != protocol.GenesisAllocationSender {
-				// confirmedTx is rebuilt by replayState; this function only rebuilds money.
+			id := tx.IdentityHash()
+			if id != "" {
+				if _, exists := seenTx[id]; exists {
+					return nil, 0, 0, 0, errors.New("duplicate transaction identity in active chain")
+				}
+				seenTx[id] = struct{}{}
 			}
 			if tx.Sender == protocol.GenesisAllocationSender {
 				return nil, 0, 0, 0, errors.New("genesis allocation cannot appear in a block")
@@ -437,14 +438,30 @@ func miningIssuedFor(ch []*block.Block) (uint64, error) {
 }
 
 // transactionsValid performs structural transaction/coinbase checks without mutating chain state.
-func transactionsValid(b *block.Block, reward uint64) error {
+func transactionsValid(prefix []*block.Block, b *block.Block, reward uint64) error {
 	if b.Index == 0 {
 		return block.ValidateGenesis(b)
 	}
 	coin := 0
+	seen := make(map[string]struct{}, len(b.Transactions))
 	for _, tx := range b.Transactions {
 		if err := tx.Validate(); err != nil {
 			return fmt.Errorf("invalid transaction: %w", err)
+		}
+		id := tx.IdentityHash()
+		if id == "" {
+			return errors.New("transaction identity is empty")
+		}
+		if _, exists := seen[id]; exists {
+			return errors.New("duplicate transaction identity within block")
+		}
+		seen[id] = struct{}{}
+		for _, prior := range prefix {
+			for _, confirmed := range prior.Transactions {
+				if confirmed.IdentityHash() == id {
+					return errors.New("transaction identity already confirmed")
+				}
+			}
 		}
 		if tx.Sender == protocol.CoinbaseSender {
 			coin++
@@ -690,8 +707,8 @@ func (c *Chain) ActiveHeaderHashes() [][32]byte {
 		var h [32]byte
 		raw := []byte(b.Hash)
 		if len(raw) == 64 {
-			for i := 0; i < 32; i++ {
-				fmt.Sscanf(string(raw[i*2:i*2+2]), "%02x", &h[i])
+			if _, err := hex.Decode(h[:], raw); err != nil {
+				h = [32]byte{}
 			}
 		}
 		out = append(out, h)

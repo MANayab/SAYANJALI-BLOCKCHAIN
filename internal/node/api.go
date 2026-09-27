@@ -15,14 +15,15 @@ import (
 )
 
 type API struct {
-	n      *Node
-	rateMu sync.Mutex
-	rates  map[string]*security.TokenBucket
+	n              *Node
+	rateMu         sync.Mutex
+	rates          map[string]*security.TokenBucket
+	maxRateEntries int
 }
 
 func (n *Node) ServeAPI() *http.Server {
 	mux := http.NewServeMux()
-	a := &API{n: n, rates: make(map[string]*security.TokenBucket)}
+	a := &API{n: n, rates: make(map[string]*security.TokenBucket), maxRateEntries: 4096}
 	mux.HandleFunc("/health", a.health)
 	mux.HandleFunc("/status", a.status)
 	mux.HandleFunc("/peers", a.peers)
@@ -31,7 +32,14 @@ func (n *Node) ServeAPI() *http.Server {
 	mux.HandleFunc("/transactions", a.transactions)
 	mux.HandleFunc("/mine", a.withAuth(a.mine))
 	mux.HandleFunc("/shutdown", a.withAuth(a.shutdown))
-	return &http.Server{Addr: n.cfg.APIListenAddress, Handler: securityHeaders(mux)}
+	return &http.Server{
+		Addr: n.cfg.APIListenAddress, Handler: securityHeaders(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
 }
 
 // withAuth gates a mutating handler behind a bearer token. Fail-closed: if no
@@ -83,6 +91,12 @@ func (a *API) allowMutationRequest(r *http.Request) bool {
 	defer a.rateMu.Unlock()
 	b := a.rates[host]
 	if b == nil {
+		if len(a.rates) >= a.maxRateEntries {
+			for key := range a.rates {
+				delete(a.rates, key)
+				break
+			}
+		}
 		b, _ = security.NewTokenBucket(20, 40, time.Now())
 		a.rates[host] = b
 	}

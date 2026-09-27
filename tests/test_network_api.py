@@ -205,11 +205,12 @@ def test_receive_transaction_without_auth_rejected(client: TestClient):
     from blockchain.transaction import Transaction
     from blockchain.wallet import Wallet
 
-    sender = client.post("/wallet/create").json()
+    sender_wallet = Wallet.create()
+    sender = {"address": sender_wallet.address}
     receiver = client.post("/wallet/create").json()
     client.post("/mine", json={"miner_address": sender["address"]})
 
-    wallet = Wallet.from_private_key(sender["private_key"])
+    wallet = sender_wallet
     tx = Transaction(sender=sender["address"], receiver=receiver["address"], amount=1.0)
     tx.sign(wallet)
 
@@ -227,12 +228,13 @@ def test_receive_transaction_enters_mempool(client: TestClient):
     from blockchain.transaction import Transaction
     from blockchain.wallet import Wallet
 
-    sender = client.post("/wallet/create").json()
+    sender_wallet = Wallet.create()
+    sender = {"address": sender_wallet.address}
     receiver = client.post("/wallet/create").json()
     client.post("/mine", json={"miner_address": sender["address"]})
     ctx = _trusted_peer_envelope(client)
 
-    wallet = Wallet.from_private_key(sender["private_key"])
+    wallet = sender_wallet
     tx = Transaction(sender=sender["address"], receiver=receiver["address"], amount=1.0)
     tx.sign(wallet)
     tx_dict = tx.to_dict()
@@ -309,11 +311,12 @@ def test_transaction_submit_via_api_broadcasts_without_error(client: TestClient)
     from blockchain.wallet import Wallet
     from blockchain.transaction import Transaction
 
-    sender = client.post("/wallet/create").json()
+    sender_wallet = Wallet.create()
+    sender = {"address": sender_wallet.address}
     receiver = client.post("/wallet/create").json()
     client.post("/mine", json={"miner_address": sender["address"]})
 
-    wallet = Wallet.from_private_key(sender["private_key"])
+    wallet = sender_wallet
     tx = Transaction(sender=sender["address"], receiver=receiver["address"], amount=1.0)
     tx.sign(wallet)
 

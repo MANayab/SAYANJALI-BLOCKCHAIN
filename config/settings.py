@@ -134,7 +134,8 @@ class NetworkConfig:
     network_name: str = field(
         default_factory=lambda: _env_str("SYJ_NETWORK_NAME", "sayanjali-mainnet-mvp")
     )
-    host: str = field(default_factory=lambda: _env_str("SYJ_HOST", "0.0.0.0"))
+    # The bind address is intentionally operator-configurable via SYJ_HOST.
+    host: str = field(default_factory=lambda: _env_str("SYJ_HOST", "0.0.0.0"))  # nosec B104
     port: int = field(default_factory=lambda: _env_int("SYJ_PORT", 8000))
     chain_id: int = field(default_factory=lambda: _env_int("SYJ_CHAIN_ID", 1))
 
@@ -352,7 +353,8 @@ class Settings:
         """
         if self.p2p.advertised_address:
             return self.p2p.advertised_address.rstrip("/")
-        host = self.network.host if self.network.host != "0.0.0.0" else "127.0.0.1"
+        # Normalize the wildcard bind to loopback when constructing the local API URL.
+        host = self.network.host if self.network.host != "0.0.0.0" else "127.0.0.1"  # nosec B104
         return f"http://{host}:{self.network.port}"
 
 

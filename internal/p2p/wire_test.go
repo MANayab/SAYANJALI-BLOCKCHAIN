@@ -33,7 +33,7 @@ func TestFrameRejectsHugeLength(t *testing.T) {
 	b := make([]byte, HeaderSize)
 	copy(b[:4], Magic)
 	b[4] = 1
-	b[5] = 0
+	b[5] = ProtocolMinor
 	b[6] = 0
 	b[7] = uint8(NEW_TRANSACTION)
 	b[15] = 1
@@ -84,10 +84,10 @@ func TestAllMessagesRoundTrip(t *testing.T) {
 		dec  func(Frame) error
 	}{
 		{"hello", HELLO, func(r uint64) ([]byte, error) {
-			return EncodeHello(Hello{"sayanjali-p2p", "main", "node", "127.0.0.1:1000", 1, 0, h[:], make([]byte, 64), make([]byte, 32), make([]byte, 64), CapBlocks | CapTransactions}, r)
+			return EncodeHello(Hello{"sayanjali-p2p", "main", "node", "127.0.0.1:1000", 1, ProtocolMinor, h[:], make([]byte, 64), make([]byte, 32), make([]byte, 64), CapBlocks | CapTransactions}, r)
 		}, func(f Frame) error { _, e := DecodeHello(f); return e }},
 		{"hello_ack", HELLO_ACK, func(r uint64) ([]byte, error) {
-			return EncodeHelloAck(HelloAck{"sayanjali-p2p", "main", "node", "127.0.0.1:1000", 1, 0, h[:], make([]byte, 64), make([]byte, 32), make([]byte, 32), make([]byte, 64), CapBlocks | CapSync}, r)
+			return EncodeHelloAck(HelloAck{"sayanjali-p2p", "main", "node", "127.0.0.1:1000", 1, ProtocolMinor, h[:], make([]byte, 64), make([]byte, 32), make([]byte, 32), make([]byte, 64), CapBlocks | CapSync}, r)
 		}, func(f Frame) error { _, e := DecodeHelloAck(f); return e }},
 		{"get_peers", GET_PEERS, func(r uint64) ([]byte, error) { return EncodeGetPeers(GetPeers{"node-a", 16}, r) }, func(f Frame) error { _, e := DecodeGetPeers(f); return e }},
 		{"peers", PEERS, func(r uint64) ([]byte, error) {

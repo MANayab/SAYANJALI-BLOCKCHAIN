@@ -118,7 +118,7 @@ class Block:
             index=data["index"],
             previous_hash=data["previous_hash"],
             transactions=transactions,
-            timestamp=float(data["timestamp"]),
+            timestamp=(data["timestamp"] if int(data.get("index", 0)) == 0 else int(data["timestamp"])),
             nonce=int(data.get("nonce", 0)),
             difficulty=int(data.get("difficulty", 0)),
             merkle_root=data.get("merkle_root", ""),

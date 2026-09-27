@@ -55,3 +55,9 @@ def test_is_valid_address_rejects_bad_formats():
     assert not is_valid_address("not-an-address")
     assert not is_valid_address("SYJ123")  # too short
     assert not is_valid_address(12345)  # type: ignore[arg-type]
+
+
+def test_is_valid_address_rejects_noncanonical_uppercase_hex():
+    wallet = Wallet.create()
+    upper = "SYJ" + wallet.address[3:].upper()
+    assert not is_valid_address(upper)

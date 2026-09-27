@@ -185,7 +185,7 @@ func encodeString(b *bytes.Buffer, s string) {
 		default:
 			if r < 0x20 || r > 0x7e {
 				if r <= 0xffff {
-					writeU4(b, uint16(r))
+					writeU4(b, uint16(r)) // #nosec G115 -- r is explicitly bounded by r <= 0xffff.
 				} else {
 					for _, u := range utf16.Encode([]rune{r}) {
 						writeU4(b, u)

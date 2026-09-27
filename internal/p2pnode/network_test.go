@@ -4,11 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"log/slog"
 	"net"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -217,220 +215,32 @@ func TestVerifyPeerIdentityRejectsWrongPublicKey(t *testing.T) {
 	}
 }
 
-func TestVerifyHelloConsumesChallengeOnce(t *testing.T) {
+func TestVerifyHelloIsStatelessAcrossRepeatedChallenges(t *testing.T) {
 	n, closeN := testNetwork(t, nil)
 	defer closeN()
-
 	peerPriv := make([]byte, 32)
 	for i := range peerPriv {
 		peerPriv[i] = byte(i + 1)
 	}
-
 	peerPub, err := crypto.PublicKeyFromPrivate(peerPriv)
 	if err != nil {
 		t.Fatal(err)
 	}
 	peerPubHex := hex.EncodeToString(peerPub)
-
-	pub := append([]byte(nil), peerPub...)
-
-	peerIDBytes := crypto.SHA256Bytes([]byte(peerPubHex))
-	peerNodeID := hex.EncodeToString(peerIDBytes[:])
-
-	genesis, err := hex.DecodeString(n.cfg.GenesisHash)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	challenge := make([]byte, 32)
-	challenge[0] = 1
-
-	h := p2p.Hello{
-		ProtocolName:      "sayanjali-p2p",
-		NetworkName:       n.cfg.NetworkName,
-		NodeID:            peerNodeID,
-		AdvertisedAddress: "127.0.0.1:30399",
-		VersionMajor:      p2p.ProtocolMajor,
-		VersionMinor:      p2p.ProtocolMinor,
-		GenesisHash:       genesis,
-		PublicKey:         pub,
-		Challenge:         challenge,
-		Capabilities:      p2p.CapBlocks | p2p.CapTransactions | p2p.CapSync,
-	}
-
-	sb, err := p2p.HelloSigningBytes(h)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sig, err := crypto.SignECDSA(peerPriv, string(sb))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Signature = sig
-
-	if err := n.verifyHello(h); err != nil {
-		t.Fatalf("first HELLO rejected: %v", err)
-	}
-
-	if err := n.verifyHello(h); !errors.Is(err, security.ErrReplay) {
-		t.Fatalf("expected replay rejection, got %v", err)
-	}
-}
-
-func TestVerifyHelloAcceptsDifferentChallenge(t *testing.T) {
-	n, closeN := testNetwork(t, nil)
-	defer closeN()
-
-	peerPriv := make([]byte, 32)
-	for i := range peerPriv {
-		peerPriv[i] = byte(i + 1)
-	}
-
-	peerPub, err := crypto.PublicKeyFromPrivate(peerPriv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	peerPubHex := hex.EncodeToString(peerPub)
-
-	pub := append([]byte(nil), peerPub...)
-
-	peerIDBytes := crypto.SHA256Bytes([]byte(peerPubHex))
-	peerNodeID := hex.EncodeToString(peerIDBytes[:])
-
-	genesis, err := hex.DecodeString(n.cfg.GenesisHash)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	makeHello := func(value byte) p2p.Hello {
-		challenge := make([]byte, 32)
-		challenge[0] = value
-
-		h := p2p.Hello{
-			ProtocolName:      "sayanjali-p2p",
-			NetworkName:       n.cfg.NetworkName,
-			NodeID:            peerNodeID,
-			AdvertisedAddress: "127.0.0.1:30400",
-			VersionMajor:      p2p.ProtocolMajor,
-			VersionMinor:      p2p.ProtocolMinor,
-			GenesisHash:       genesis,
-			PublicKey:         pub,
-			Challenge:         challenge,
-			Capabilities:      p2p.CapBlocks | p2p.CapTransactions | p2p.CapSync,
-		}
-
-		sb, err := p2p.HelloSigningBytes(h)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sig, err := crypto.SignECDSA(peerPriv, string(sb))
-		if err != nil {
-			t.Fatal(err)
-		}
-		h.Signature = sig
+	idBytes := crypto.SHA256Bytes([]byte(peerPubHex))
+	genesis, _ := hex.DecodeString(n.cfg.GenesisHash)
+	makeHello := func(v byte) p2p.Hello {
+		h := p2p.Hello{ProtocolName: "sayanjali-p2p", NetworkName: n.cfg.NetworkName, NodeID: hex.EncodeToString(idBytes[:]), AdvertisedAddress: "127.0.0.1:30400", VersionMajor: p2p.ProtocolMajor, VersionMinor: p2p.ProtocolMinor, GenesisHash: genesis, PublicKey: peerPub, Challenge: make([]byte, 32), Capabilities: p2p.CapBlocks | p2p.CapTransactions | p2p.CapSync}
+		h.Challenge[0] = v
+		sb, _ := p2p.HelloSigningBytes(h)
+		h.Signature, _ = crypto.SignECDSA(peerPriv, string(sb))
 		return h
 	}
-
 	if err := n.verifyHello(makeHello(2)); err != nil {
-		t.Fatalf("first challenge rejected: %v", err)
-	}
-
-	if err := n.verifyHello(makeHello(3)); err != nil {
-		t.Fatalf("different challenge rejected: %v", err)
-	}
-}
-
-func TestVerifyHelloConcurrentDuplicateChallenge(t *testing.T) {
-	n, closeN := testNetwork(t, nil)
-	defer closeN()
-
-	peerPriv := make([]byte, 32)
-	for i := range peerPriv {
-		peerPriv[i] = byte(i + 1)
-	}
-
-	peerPub, err := crypto.PublicKeyFromPrivate(peerPriv)
-	if err != nil {
 		t.Fatal(err)
 	}
-	peerPubHex := hex.EncodeToString(peerPub)
-	peerNodeIDBytes := crypto.SHA256Bytes([]byte(peerPubHex))
-	peerNodeID := hex.EncodeToString(peerNodeIDBytes[:])
-
-	genesis, err := hex.DecodeString(n.cfg.GenesisHash)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	challenge := make([]byte, 32)
-	challenge[0] = 0x7f
-
-	h := p2p.Hello{
-		ProtocolName:      "sayanjali-p2p",
-		NetworkName:       n.cfg.NetworkName,
-		NodeID:            peerNodeID,
-		AdvertisedAddress: "127.0.0.1:30402",
-		VersionMajor:      p2p.ProtocolMajor,
-		VersionMinor:      p2p.ProtocolMinor,
-		GenesisHash:       genesis,
-		PublicKey:         peerPub,
-		Challenge:         challenge,
-		Capabilities:      p2p.CapBlocks | p2p.CapTransactions | p2p.CapSync,
-	}
-
-	sb, err := p2p.HelloSigningBytes(h)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sig, err := crypto.SignECDSA(peerPriv, string(sb))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Signature = sig
-
-	const workers = 32
-
-	results := make(chan error, workers)
-	start := make(chan struct{})
-
-	var wg sync.WaitGroup
-	wg.Add(workers)
-
-	for i := 0; i < workers; i++ {
-		go func() {
-			defer wg.Done()
-			<-start
-			results <- n.verifyHello(h)
-		}()
-	}
-
-	close(start)
-	wg.Wait()
-	close(results)
-
-	accepted := 0
-	replayed := 0
-
-	for err := range results {
-		switch {
-		case err == nil:
-			accepted++
-		case errors.Is(err, security.ErrReplay):
-			replayed++
-		default:
-			t.Fatalf("unexpected concurrent HELLO result: %v", err)
-		}
-	}
-
-	if accepted != 1 {
-		t.Fatalf("expected exactly one accepted HELLO, got %d", accepted)
-	}
-
-	if replayed != workers-1 {
-		t.Fatalf("expected %d replay rejections, got %d", workers-1, replayed)
+	if err := n.verifyHello(makeHello(2)); err != nil {
+		t.Fatalf("replayed HELLO should pass only as an unauthenticated pre-session message; got %v", err)
 	}
 }
 

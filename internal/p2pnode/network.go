@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,18 +58,17 @@ type Config struct {
 	TLSServerName        string
 }
 type Network struct {
-	cfg             Config
-	ch              *chain.Chain
-	pool            *mempool.Pool
-	ln              net.Listener
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	mu              sync.RWMutex
-	peers           map[string]*Peer
-	nextReq         atomic.Uint64
-	handshakeReplay *security.ReplayCache
-	reputation      *security.Reputation
+	cfg        Config
+	ch         *chain.Chain
+	pool       *mempool.Pool
+	ln         net.Listener
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	mu         sync.RWMutex
+	peers      map[string]*Peer
+	nextReq    atomic.Uint64
+	reputation *security.Reputation
 
 	admissionMu       sync.Mutex
 	pendingHandshakes int
@@ -86,15 +84,16 @@ type Peer struct {
 	Session      *Session
 }
 type Session struct {
-	n            *Network
-	p            *Peer
-	conn         net.Conn
-	tracker      *p2p.RequestTracker
-	pendingMu    sync.Mutex
-	pending      map[uint64]chan p2p.Frame
-	writeMu      sync.Mutex
-	closed       chan struct{}
-	messageLimit *security.TokenBucket
+	n                  *Network
+	p                  *Peer
+	conn               net.Conn
+	tracker            *p2p.RequestTracker
+	pendingMu          sync.Mutex
+	pending            map[uint64]chan p2p.Frame
+	writeMu            sync.Mutex
+	closed             chan struct{}
+	messageLimit       *security.TokenBucket
+	handshakeChallenge []byte
 }
 
 func New(cfg Config, ch *chain.Chain, pool *mempool.Pool) *Network {
@@ -141,11 +140,6 @@ func New(cfg Config, ch *chain.Chain, pool *mempool.Pool) *Network {
 		policy.AllowDNS = true
 	}
 
-	replay, err := security.NewReplayCache(4096, 10*time.Minute)
-	if err != nil {
-		panic("invalid handshake replay cache configuration: " + err.Error())
-	}
-
 	reputation, err := security.NewReputation(
 		4096,
 		3,
@@ -158,14 +152,13 @@ func New(cfg Config, ch *chain.Chain, pool *mempool.Pool) *Network {
 	}
 
 	return &Network{
-		cfg:             cfg,
-		ch:              ch,
-		pool:            pool,
-		peers:           make(map[string]*Peer),
-		handshakeReplay: replay,
-		reputation:      reputation,
-		handshakesByIP:  make(map[string]int),
-		addressPolicy:   policy,
+		cfg:            cfg,
+		ch:             ch,
+		pool:           pool,
+		peers:          make(map[string]*Peer),
+		reputation:     reputation,
+		handshakesByIP: make(map[string]int),
+		addressPolicy:  policy,
 	}
 }
 func (n *Network) recordReputationViolation(
@@ -247,7 +240,7 @@ func validateP2PTLSCA(path string) error {
 }
 
 func loadP2PTrustRoots(path string) (*x509.CertPool, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is the operator-configured local P2P CA certificate path.
 	if err != nil {
 		return nil, fmt.Errorf("read P2P TLS CA file: %w", err)
 	}
@@ -270,9 +263,21 @@ func (n *Network) Start(ctx context.Context) error {
 		if err := validateP2PTLSCA(n.cfg.TLSCAFile); err != nil {
 			return err
 		}
-		ln, err = tls.Listen("tcp", n.cfg.ListenAddress, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}})
+		roots, rootErr := loadP2PTrustRoots(n.cfg.TLSCAFile)
+		if rootErr != nil {
+			return rootErr
+		}
+		listener, listenErr := tls.Listen("tcp", n.cfg.ListenAddress, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots})
+		if listenErr != nil {
+			return listenErr
+		}
+		ln = listener
 	} else {
-		ln, err = net.Listen("tcp", n.cfg.ListenAddress)
+		listener, listenErr := net.Listen("tcp", n.cfg.ListenAddress)
+		if listenErr != nil {
+			return listenErr
+		}
+		ln = listener
 	}
 	if err != nil {
 		return err
@@ -396,7 +401,12 @@ func (n *Network) seedLoop(addr string) {
 				if serverName == "" {
 					serverName, _, _ = net.SplitHostPort(endpoint)
 				}
-				dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: serverName, InsecureSkipVerify: false}}
+				cert, certErr := tls.LoadX509KeyPair(n.cfg.TLSCertFile, n.cfg.TLSKeyFile)
+				if certErr != nil {
+					n.cfg.Logger.Warn("P2P TLS client certificate invalid", "error", certErr)
+					break
+				}
+				dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{cert}, ServerName: serverName, InsecureSkipVerify: false}}
 				c, err = dialer.DialContext(n.ctx, "tcp", endpoint)
 			} else {
 				c, err = net.DialTimeout("tcp", endpoint, 5*time.Second)
@@ -504,6 +514,21 @@ func (n *Network) handleConn(conn net.Conn, inbound bool) {
 				remoteID, remoteAddr, caps = h.NodeID, h.AdvertisedAddress, h.Capabilities
 				err = n.sendAck(s, h, req)
 			}
+			if err == nil {
+				ackFrame, readErr := p2p.ReadFrame(conn)
+				if readErr != nil {
+					err = readErr
+				} else if ackFrame.Type != p2p.HELLO_FINISH || ackFrame.RequestID != req {
+					err = errors.New("expected HELLO_FINISH")
+				} else {
+					finish, decodeErr := p2p.DecodeHelloFinish(ackFrame)
+					if decodeErr != nil {
+						err = decodeErr
+					} else {
+						err = n.verifyHelloFinish(finish, h.NodeID, h.PublicKey, s.handshakeChallenge)
+					}
+				}
+			}
 		} else if err == nil {
 			err = errors.New("expected HELLO")
 		}
@@ -529,6 +554,12 @@ func (n *Network) handleConn(conn net.Conn, inbound bool) {
 				}
 				if err == nil {
 					remoteID, remoteAddr, caps = a.NodeID, a.AdvertisedAddress, a.Capabilities
+					finish, signErr := n.makeHelloFinish(a.Challenge, helloReq)
+					if signErr != nil {
+						err = signErr
+					} else {
+						_, err = conn.Write(finish)
+					}
 				}
 			}
 		}
@@ -557,8 +588,9 @@ func (n *Network) handleConn(conn net.Conn, inbound bool) {
 		n.mu.Unlock()
 		return
 	}
-	if old, ok := n.peers[p.ID]; ok {
-		_ = old.Conn.Close()
+	if _, ok := n.peers[p.ID]; ok {
+		n.mu.Unlock()
+		return
 	}
 	n.peers[p.ID] = p
 	n.mu.Unlock()
@@ -566,7 +598,7 @@ func (n *Network) handleConn(conn net.Conn, inbound bool) {
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); s.readLoop() }()
 	n.wg.Add(1)
-	go func() { defer n.wg.Done(); n.syncPeer(s) }()
+	go func() { defer n.wg.Done(); n.syncLoop(s) }()
 	select {
 	case <-n.ctx.Done():
 	case <-s.closed:
@@ -605,6 +637,7 @@ func (n *Network) sendAck(s *Session, h p2p.Hello, req uint64) error {
 	if err != nil {
 		return err
 	}
+	s.handshakeChallenge = append([]byte(nil), ch...)
 	v := p2p.HelloAck{ProtocolName: "sayanjali-p2p", NetworkName: n.cfg.NetworkName, NodeID: n.cfg.NodeID, AdvertisedAddress: n.cfg.AdvertisedAddress, VersionMajor: p2p.ProtocolMajor, VersionMinor: p2p.ProtocolMinor, GenesisHash: g, PublicKey: mustHex(n.cfg.PublicKeyHex), EchoChallenge: h.Challenge, Challenge: ch, Capabilities: p2p.CapBlocks | p2p.CapTransactions | p2p.CapSync}
 	sb, err := p2p.HelloAckSigningBytes(v)
 	if err != nil {
@@ -661,10 +694,33 @@ func (n *Network) verifyHello(h p2p.Hello) error {
 	if !corecrypto.VerifyECDSA(hex.EncodeToString(h.PublicKey), string(sb), h.Signature) {
 		return errors.New("invalid hello signature")
 	}
-	if err := n.handshakeReplay.Consume(h.Challenge, time.Now()); err != nil {
+	return nil
+}
+func (n *Network) verifyHelloFinish(f p2p.HelloFinish, expectedID string, expectedPub []byte, challenge []byte) error {
+	if f.NodeID != expectedID || !p2p.SameChallenge(f.EchoChallenge, challenge) || !strings.EqualFold(hex.EncodeToString(f.PublicKey), hex.EncodeToString(expectedPub)) {
+		return errors.New("invalid HELLO_FINISH identity")
+	}
+	sb, err := p2p.HelloFinishSigningBytes(f)
+	if err != nil {
 		return err
 	}
+	if !corecrypto.VerifyECDSA(hex.EncodeToString(f.PublicKey), string(sb), f.Signature) {
+		return errors.New("invalid hello finish signature")
+	}
 	return nil
+}
+func (n *Network) makeHelloFinish(challenge []byte, req uint64) ([]byte, error) {
+	v := p2p.HelloFinish{NodeID: n.cfg.NodeID, PublicKey: mustHex(n.cfg.PublicKeyHex), EchoChallenge: challenge}
+	sb, err := p2p.HelloFinishSigningBytes(v)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := n.cfg.Identity.Sign(sb)
+	if err != nil {
+		return nil, err
+	}
+	v.Signature = sig
+	return p2p.EncodeHelloFinish(v, req)
 }
 func (n *Network) verifyAck(a p2p.HelloAck, req uint64, challenge []byte) error {
 	if req == 0 || a.NetworkName != n.cfg.NetworkName || hex.EncodeToString(a.GenesisHash) != strings.ToLower(n.cfg.GenesisHash) || !p2p.SameChallenge(a.EchoChallenge, challenge) {
@@ -682,21 +738,6 @@ func (n *Network) verifyAck(a p2p.HelloAck, req uint64, challenge []byte) error 
 	}
 	return nil
 }
-func validateAdvertisedAddress(addr string) error {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil || host == "" || port == "" {
-		return errors.New("invalid advertised address")
-	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
-		return errors.New("invalid advertised port")
-	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsUnspecified() || ip.IsMulticast()) {
-		return errors.New("invalid advertised host")
-	}
-	return nil
-}
-
 func (n *Network) sendRejectRaw(c net.Conn, r p2p.Reject) {
 	b, err := p2p.EncodeReject(r, 0)
 	if err == nil {
@@ -939,6 +980,9 @@ func (s *Session) acceptBlock(data []byte) error {
 	}
 	ok, reason, e := s.n.ch.Accept(b)
 	if e != nil || !ok {
+		if reason == "unknown_ancestor" {
+			go s.n.syncPeer(s)
+		}
 		return errOr(reason, e)
 	}
 	if reason == "best" {
@@ -1005,7 +1049,9 @@ func (s *Session) acceptTx(data []byte) error {
 func (s *Session) write(b []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	_ = s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, e := s.conn.Write(b)
+	_ = s.conn.SetWriteDeadline(time.Time{})
 	return e
 }
 func (s *Session) writeReject(id uint64, code uint16, closeFlag bool, reason string) error {
@@ -1021,6 +1067,22 @@ func (s *Session) writeReject(id uint64, code uint16, closeFlag bool, reason str
 	}
 	return s.write(b)
 }
+func (n *Network) syncLoop(s *Session) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	n.syncPeer(s)
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-s.closed:
+			return
+		case <-t.C:
+			n.syncPeer(s)
+		}
+	}
+}
+
 func (n *Network) syncPeer(s *Session) {
 	locator := n.locator()
 	for rounds := 0; rounds < 1024; rounds++ {
@@ -1109,12 +1171,15 @@ func (n *Network) propagateBlock(b *block.Block, exclude string) {
 		return
 	}
 	n.mu.RLock()
-	defer n.mu.RUnlock()
+	sessions := make([]*Session, 0, len(n.peers))
 	for id, p := range n.peers {
-		if id == exclude || p.Session == nil {
-			continue
+		if id != exclude && p.Session != nil {
+			sessions = append(sessions, p.Session)
 		}
-		_ = p.Session.write(frame)
+	}
+	n.mu.RUnlock()
+	for _, session := range sessions {
+		_ = session.write(frame)
 	}
 }
 func (n *Network) propagateTx(tx transaction.Transaction, exclude string) {
@@ -1127,12 +1192,15 @@ func (n *Network) propagateTx(tx transaction.Transaction, exclude string) {
 		return
 	}
 	n.mu.RLock()
-	defer n.mu.RUnlock()
+	sessions := make([]*Session, 0, len(n.peers))
 	for id, p := range n.peers {
-		if id == exclude {
-			continue
+		if id != exclude && p.Session != nil {
+			sessions = append(sessions, p.Session)
 		}
-		_ = p.Session.write(frame)
+	}
+	n.mu.RUnlock()
+	for _, session := range sessions {
+		_ = session.write(frame)
 	}
 }
 func (n *Network) removePeer(id string, session *Session) {

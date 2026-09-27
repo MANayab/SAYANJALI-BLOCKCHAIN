@@ -262,6 +262,7 @@ def test_replace_chain_still_works_with_new_retarget(blockchain: Blockchain):
         new_block, _ = engine.mine_block(
             index=i, previous_hash=candidate[-1].hash, mempool=blockchain.mempool,
             miner_address=other_miner.address, difficulty=required,
+            timestamp=int(candidate[-1].timestamp) + 1,
         )
         candidate.append(new_block)
 

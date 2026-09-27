@@ -35,13 +35,15 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "ledger.journal"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	f, err := os.OpenFile(filepath.Join(dir, "ledger.journal"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600) // #nosec G304 -- dir is the operator-configured node data directory; filename is fixed.
 	if err != nil {
 		return nil, err
 	}
 	s := &Store{dir: dir, file: f, blocks: make(map[string][]byte)}
 	if err := s.replay(); err != nil {
-		f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return s, nil
@@ -144,14 +146,14 @@ func (s *Store) truncateTail(offset int64) error {
 }
 
 func (s *Store) appendRecord(typ byte, payload []byte) error {
-	if len(payload) > maxRecord {
+	if len(payload) > maxRecord || uint64(len(payload)) > uint64(^uint32(0)) {
 		return errors.New("record too large")
 	}
 	var hdr [19]byte
 	copy(hdr[:8], magic)
 	binary.BigEndian.PutUint16(hdr[8:10], version)
 	hdr[10] = typ
-	binary.BigEndian.PutUint32(hdr[11:15], uint32(len(payload)))
+	binary.BigEndian.PutUint32(hdr[11:15], uint32(len(payload))) // #nosec G115 -- payload length is explicitly bounded to uint32.
 	binary.BigEndian.PutUint32(hdr[15:19], crc32.ChecksumIEEE(payload))
 	if _, err := s.file.Write(hdr[:]); err != nil {
 		return err

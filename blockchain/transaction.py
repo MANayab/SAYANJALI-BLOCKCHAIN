@@ -152,13 +152,13 @@ class Transaction:
             return cls(
                 sender=data["sender"], receiver=data["receiver"],
                 amount_base_units=amount_base_units,
-                timestamp=float(data["timestamp"]),
+                timestamp=(data["timestamp"] if data.get("sender") == "SYJ-GENESIS-0000000000000000000000000000" else int(data["timestamp"])),
                 sender_public_key=data.get("sender_public_key"),
                 signature=data.get("signature"), tx_hash=data.get("tx_hash", ""),
             )
         return cls(
             sender=data["sender"], receiver=data["receiver"],
-            amount=data["amount"], timestamp=float(data["timestamp"]),
+            amount=data["amount"], timestamp=(data["timestamp"] if data.get("sender") == "SYJ-GENESIS-0000000000000000000000000000" else int(data["timestamp"])),
             sender_public_key=data.get("sender_public_key"),
             signature=data.get("signature"), tx_hash=data.get("tx_hash", ""),
         )

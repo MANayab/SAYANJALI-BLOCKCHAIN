@@ -119,6 +119,6 @@ merely because nodes synchronize
 
 ## Production transport and secret boundary
 
-The Go production-track API must use TLS whenever it listens on a non-loopback address. Bearer authentication is not considered a substitute for encrypted transport. P2P supports a TLS transport wrapper around the frozen Phase 5.2 application protocol; enabling TLS does not alter frame IDs, HELLO encoding, or application payload grammar.
+The Go production-track API must use TLS whenever it listens on a non-loopback address. Bearer authentication is not considered a substitute for encrypted transport. P2P production transport now requires TLS 1.3 with mutual certificate verification on non-loopback listeners. Phase 9.3 adds a HELLO_FINISH authentication step and therefore requires the documented P2P protocol-minor amendment; old handshake peers are not assumed compatible.
 
 Node identity private keys are not stored as plaintext by the production-track identity loader. `SYJ_IDENTITY_ENCRYPTION_KEY` must be supplied out of band as 32 random bytes encoded as 64 hexadecimal characters. Do not put this value in source, genesis configuration, logs, CI output, or committed files.

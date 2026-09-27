@@ -182,7 +182,9 @@ def test_two_node_network_converges_with_authentication(two_nodes):
     assert peers_b["count"] == 1 and peers_b["peers"][0]["trusted"]
 
     # --- Fund a wallet on A so it can send a transaction. ---
-    sender = httpx.post(f"{base_a}/wallet/create").json()
+    from blockchain.wallet import Wallet
+    sender_wallet = Wallet.create()
+    sender = {"address": sender_wallet.address}
     receiver = httpx.post(f"{base_b}/wallet/create").json()
 
     mine_response = httpx.post(f"{base_a}/mine", json={"miner_address": sender["address"]})
@@ -199,7 +201,7 @@ def test_two_node_network_converges_with_authentication(two_nodes):
     from blockchain.transaction import Transaction
     from blockchain.wallet import Wallet
 
-    wallet = Wallet.from_private_key(sender["private_key"])
+    wallet = sender_wallet
     tx = Transaction(sender=sender["address"], receiver=receiver["address"], amount=10.0)
     tx.sign(wallet)
 
@@ -212,7 +214,7 @@ def test_two_node_network_converges_with_authentication(two_nodes):
         },
     )
     assert submit_response.status_code == 200
-    assert submit_response.json()["accepted"]
+    assert submit_response.json()["accepted"], submit_response.json()
 
     tx_propagated = _wait_until(
         lambda: any(
@@ -417,7 +419,9 @@ def test_three_node_phase2_end_to_end(three_nodes):
     assert peers["count"] == 2
     assert all(peer["trusted"] for peer in peers["peers"])
 
-    sender = httpx.post(f"{base_a}/wallet/create").json()
+    from blockchain.wallet import Wallet
+    sender_wallet = Wallet.create()
+    sender = {"address": sender_wallet.address}
     receiver = httpx.post(f"{base_c}/wallet/create").json()
 
     mined = httpx.post(f"{base_a}/mine", json={"miner_address": sender["address"]})
@@ -429,7 +433,7 @@ def test_three_node_phase2_end_to_end(three_nodes):
     from blockchain.transaction import Transaction
     from blockchain.wallet import Wallet
 
-    wallet = Wallet.from_private_key(sender["private_key"])
+    wallet = sender_wallet
     tx = Transaction(sender["address"], receiver["address"], "10")
     tx.sign(wallet)
     response = httpx.post(

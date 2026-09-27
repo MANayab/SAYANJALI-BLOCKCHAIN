@@ -158,7 +158,7 @@ or eclipse resistance.
 
 **Severity:** High\
 **Status:** Open\
-No `.github/workflows/` directory exists at the audited checkpoint.
+The repository contains `.github/workflows/production-validation.yml`; security scanner coverage and CI tool versions are tracked in Phase 9.3.
 
 ### G-021 --- Dependency reproducibility
 

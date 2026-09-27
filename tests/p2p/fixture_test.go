@@ -36,8 +36,8 @@ func TestFrozenValidWireVectors(t *testing.T) {
 	for i := range pub {
 		pub[i] = byte(i)
 	}
-	enc["hello"], _ = p2p.EncodeHello(p2p.Hello{ProtocolName: "sayanjali-p2p", NetworkName: "sayanjali-mainnet-mvp", NodeID: "node-a", AdvertisedAddress: "127.0.0.1:3030", VersionMajor: 1, VersionMinor: 0, GenesisHash: h[:], PublicKey: pub, Challenge: bytes32(7), Signature: bytes64fill(8), Capabilities: 7}, 1)
-	enc["hello_ack"], _ = p2p.EncodeHelloAck(p2p.HelloAck{ProtocolName: "sayanjali-p2p", NetworkName: "sayanjali-mainnet-mvp", NodeID: "node-a", AdvertisedAddress: "127.0.0.1:3030", VersionMajor: 1, VersionMinor: 0, GenesisHash: h[:], PublicKey: pub, EchoChallenge: bytes32(7), Challenge: bytes32(9), Signature: bytes64fill(8), Capabilities: 7}, 1)
+	enc["hello"], _ = p2p.EncodeHello(p2p.Hello{ProtocolName: "sayanjali-p2p", NetworkName: "sayanjali-mainnet-mvp", NodeID: "node-a", AdvertisedAddress: "127.0.0.1:3030", VersionMajor: 1, VersionMinor: 1, GenesisHash: h[:], PublicKey: pub, Challenge: bytes32(7), Signature: bytes64fill(8), Capabilities: 7}, 1)
+	enc["hello_ack"], _ = p2p.EncodeHelloAck(p2p.HelloAck{ProtocolName: "sayanjali-p2p", NetworkName: "sayanjali-mainnet-mvp", NodeID: "node-a", AdvertisedAddress: "127.0.0.1:3030", VersionMajor: 1, VersionMinor: 1, GenesisHash: h[:], PublicKey: pub, EchoChallenge: bytes32(7), Challenge: bytes32(9), Signature: bytes64fill(8), Capabilities: 7}, 1)
 	enc["get_peers"], _ = p2p.EncodeGetPeers(p2p.GetPeers{StartAfter: "", Limit: 256}, 2)
 	enc["peers"], _ = p2p.EncodePeers(p2p.Peers{Entries: []p2p.Peer{{NodeID: "node-a", Host: "127.0.0.1", Port: 3030, Capabilities: 7}}}, 2)
 	enc["get_headers"], _ = p2p.EncodeGetHeaders(p2p.GetHeaders{Locator: [][32]byte{h}, MaxCount: 2048}, 3)
@@ -76,7 +76,6 @@ func TestFrozenInvalidWireVectors(t *testing.T) {
 	}
 }
 func bytes32(x byte) []byte     { return bytesN(32, x) }
-func bytes64() []byte           { return bytesN(64, 0) }
 func bytes64fill(x byte) []byte { return bytesN(64, x) }
 func bytesN(n int, x byte) []byte {
 	b := make([]byte, n)

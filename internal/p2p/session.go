@@ -29,7 +29,7 @@ func (s SessionState) String() string {
 func AllowedInState(s SessionState, t MessageType) bool {
 	switch s {
 	case Handshaking:
-		return t == HELLO || t == HELLO_ACK
+		return t == HELLO || t == HELLO_ACK || t == HELLO_FINISH
 	case Established:
 		return t >= GET_PEERS && t <= REJECT
 	default:

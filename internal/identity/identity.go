@@ -41,7 +41,7 @@ func LoadOrCreate(dir string) (*Identity, bool, error) {
 		return nil, false, fmt.Errorf("protect identity directory: %w", err)
 	}
 	path := filepath.Join(dir, "identity.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is constructed from the operator-configured identity directory and fixed identity.json filename.
 	if err == nil {
 		if err := requirePrivateFile(path); err != nil {
 			return nil, false, err
