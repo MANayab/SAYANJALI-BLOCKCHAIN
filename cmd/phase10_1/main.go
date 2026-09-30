@@ -168,7 +168,9 @@ func execute(cfg Config) (execution, error) {
 	}
 	ch, err := chain.Open(store)
 	if err != nil {
-		store.Close()
+		if closeErr := store.Close(); closeErr != nil {
+			return execution{}, fmt.Errorf("chain open: %w (store close: %v)", err, closeErr)
+		}
 		return execution{}, err
 	}
 
@@ -323,7 +325,9 @@ func execute(cfg Config) (execution, error) {
 	}
 	reloaded, err := chain.Open(reloadedStore)
 	if err != nil {
-		reloadedStore.Close()
+		if closeErr := reloadedStore.Close(); closeErr != nil {
+			return execution{summary: summary}, fmt.Errorf("restart chain open: %w (store close: %v)", err, closeErr)
+		}
 		return execution{summary: summary}, fmt.Errorf("restart chain open: %w", err)
 	}
 	summary.RestartHeight = reloaded.Height()
