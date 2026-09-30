@@ -1,6 +1,6 @@
 # SAYANJALI BLOCKCHAIN
 
-> **Current documentation phase:** Phase 9 — Protocol Formalization
+> **Current documentation phase:** Phase 10.1 — Runtime, Consensus & Production-Gate Validation
 >
 > **Current status:** NOT PRODUCTION-READY • NOT MAINNET-READY
 >
@@ -9,7 +9,7 @@
 > before a production-consensus implementation. It does **not** represent
 > the proposed PoS/BFT architecture as shipped or implemented.
 
-## Current Phase 9 maturity
+## Current Phase 10.1 maturity
 
 SAYANJALI BLOCKCHAIN is an independent Layer-1 protocol research and
 engineering project by SAYANJALI NEXUS PRIVATE LIMITED.
@@ -717,6 +717,30 @@ ahead of any mainnet deployment.
 Vulnerabilities should be reported privately rather than through public
 issues, given the project's early stage.
 
+## Phase 10.1 Current Verification Status
+
+> **Engineering status:** Phase 10.1 400-block consensus/difficulty regression harness is implemented. An isolated dependency-constrained run accepted 400/400 blocks, crossed 40 retarget boundaries, passed restart/reload validation, and reproduced all deterministic consensus fields across an independent second run.
+>
+> **Production status:** **NOT PRODUCTION-READY / NOT MAINNET-READY.**
+
+The authoritative Phase 10 baseline is `ea26fe1db68f2e45ad7051cbedae655de36b0ca6`. The supplied Phase 9.5 archive was reconciled against that exact Git tree: 305/305 files matched by path, mode, and Git blob hash. Historical Phase 9.5 provenance statements remain unchanged.
+
+### Phase 10.1 validation
+
+- 400 non-genesis blocks accepted through the production Go chain acceptance path in an isolated validation copy.
+- 40 retarget boundaries crossed.
+- Difficulty schedule exercised downward, upward, and stable retarget behavior.
+- State-root progression and final restart/reload state root verified.
+- Merkle root checked for every accepted block.
+- Cumulative work increased monotonically.
+- Deterministic consensus fields matched across two independent runs.
+
+### Current environment limitation
+
+The repository requires Go `1.27` / toolchain `go1.27.1`, while the current execution environment provides Go `1.23.2` and cannot download the required toolchain or pinned secp256k1 module. Therefore the official production Go build/test/vet/race gates are **NOT EXECUTED** here. The empirical 400-block run used a temporary disposable crypto stub only to execute the real consensus/chain/state path; that stub is not part of the delivery archive and no cryptographic validation claim is inferred.
+
+See `PHASE10_1_VALIDATION_REPORT.md`, `PHASE10_PROVENANCE.md`, and `docs/consensus/phase10-400-block-regression.md`.
+
 ## Phase 9.5 Current Verification Status
 
 > **Engineering status:** Phase 9.5 implementation is present in the current working tree and has passed the local Go/Python validation gates available on the current Android/ARM64 environment.
@@ -761,7 +785,7 @@ The Phase 9.5 state/reorganization test coverage includes:
 
 ### Current local validation
 
-The latest local validation was performed with:
+The following is the historical Phase 9.5 validation record retained for provenance; it is not the Phase 10.1 execution environment:
 
 - Go: `go1.27.0 android/arm64`
 - Python: `3.14.6`

@@ -1,0 +1,1 @@
+PASS: 400 consensus records are identical
