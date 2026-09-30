@@ -153,11 +153,6 @@ func main() {
 
 type execution struct{ summary Summary }
 
-type runState struct {
-	summary Summary
-	last    *block.Block
-}
-
 func execute(cfg Config) (execution, error) {
 	f, err := os.OpenFile(cfg.JSONL, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
