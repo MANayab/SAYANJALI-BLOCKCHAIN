@@ -1,5 +1,16 @@
 # Changelog
 
+## Phase 10.1 — 2026-09-28
+
+- Added a reusable 400-block Go consensus/difficulty regression harness.
+- Harness exercises production block hashing, proof-of-work acceptance, chain validation, incremental state commitments, persistence reload, and cumulative-work progression.
+- Added deterministic timestamp scheduling that crosses 40 difficulty retarget boundaries and exercises downward, upward, and stable difficulty behavior without changing production consensus constants.
+- Added machine-readable JSONL evidence output and a deterministic two-run comparison utility.
+- Added Phase 10 provenance and validation documentation.
+- Empirical consensus-path validation accepted 400/400 blocks and reproduced all consensus fields across independent runs.
+- Production Go 1.27 build/test/vet/race validation remains NOT EXECUTED in the isolated build environment; no production readiness claim is made.
+- Project remains NOT PRODUCTION-READY / NOT MAINNET-READY.
+
 ## Phase 9.5 Working Candidate — 2026-09-27
 
 - Added deterministic `SYJ-STATE-ROOT-V1` state commitment implementation.

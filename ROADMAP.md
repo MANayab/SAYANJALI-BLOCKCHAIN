@@ -129,7 +129,26 @@ is not an active state-root field in the current block-header consensus format.
 
 **Production status: NOT PRODUCTION-READY / NOT MAINNET-READY.**
 
-## Phase 10 — Mainnet
+## Phase 10 — Runtime, Consensus & Production-Gate Validation
+
+Phase 10 is a validation and production-gate phase, not a mainnet-readiness declaration.
+
+### Phase 10.1 — 400-Block Consensus & Difficulty Regression
+
+- Reusable Go 400-block regression harness: implemented.
+- Production consensus-path empirical run: 400/400 blocks accepted in an isolated dependency-constrained validation build.
+- Retarget boundaries crossed: 40.
+- Deterministic consensus replay across independent runs: verified.
+- Persistent restart/reload validation: verified by the harness.
+- Production Go 1.27 build/test/vet/race validation: **NOT EXECUTED** in the current environment.
+
+Remaining Phase 10 gates include runtime/P2P/API validation, race/fuzz testing, security-tool execution, crash/recovery testing, protocol activation review, and independent security audit.
+
+**Phase 10.1 status: IMPLEMENTED / EMPIRICALLY VALIDATED ON THE CONSENSUS PATH.**
+
+**Production status: NOT PRODUCTION-READY / NOT MAINNET-READY.**
+
+## Phase 10 — Mainnet Launch (future gate)
 - Security audit of consensus, wallet, and API layers
 - Multi-signature wallet support
 - Governance mechanism (parameter changes, upgrades)
