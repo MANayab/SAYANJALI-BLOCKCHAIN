@@ -268,10 +268,6 @@ func medianTimePast(prefix []*block.Block) (float64, error) {
 	return vals[len(vals)/2], nil
 }
 
-func validateTimestamp(timestamp float64, prefix []*block.Block) error {
-	return validateTimestampForProtocol(timestamp, prefix, 1)
-}
-
 func validateTimestampForProtocol(timestamp float64, prefix []*block.Block, protocolVersion uint8) error {
 	if len(prefix) == 0 {
 		return errors.New("timestamp validation requires a parent")
