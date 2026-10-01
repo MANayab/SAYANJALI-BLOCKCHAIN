@@ -14,7 +14,7 @@ import (
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/pkg/protocol"
 )
 
-func validateChainV2(ch []*block.Block, genesisState *tokenomics.GenesisState, networkID string) error {
+func validateChainV2(ch []*block.Block, genesisState *tokenomics.GenesisState, networkID string, protocolVersion uint8) error {
 	if genesisState == nil {
 		return errors.New("V2 chain requires GenesisState")
 	}
@@ -26,14 +26,14 @@ func validateChainV2(ch []*block.Block, genesisState *tokenomics.GenesisState, n
 	}
 	cfg := protocol.DefaultDifficultyConfig()
 	for i := 1; i < len(ch); i++ {
-		if err := validateNextV2(ch[i], ch[:i], cfg, genesisState, networkID); err != nil {
+		if err := validateNextV2(ch[i], ch[:i], cfg, genesisState, networkID, protocolVersion); err != nil {
 			return fmt.Errorf("block %d: %w", ch[i].Index, err)
 		}
 	}
 	return nil
 }
 
-func validateNextV2(b *block.Block, prefix []*block.Block, cfg protocol.DifficultyConfig, genesisState *tokenomics.GenesisState, networkID string) error {
+func validateNextV2(b *block.Block, prefix []*block.Block, cfg protocol.DifficultyConfig, genesisState *tokenomics.GenesisState, networkID string, protocolVersion uint8) error {
 	if genesisState == nil {
 		return errors.New("V2 chain requires GenesisState")
 	}
@@ -47,7 +47,7 @@ func validateNextV2(b *block.Block, prefix []*block.Block, cfg protocol.Difficul
 	if b.PreviousHash != p.Hash {
 		return errors.New("previous hash mismatch")
 	}
-	if err := validateTimestamp(b.Timestamp, prefix); err != nil {
+	if err := validateTimestampForProtocol(b.Timestamp, prefix, protocolVersion); err != nil {
 		return err
 	}
 	mined, err := miningIssuedFor(prefix)

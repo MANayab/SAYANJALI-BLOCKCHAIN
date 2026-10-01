@@ -992,7 +992,7 @@ func (s *Session) acceptBlock(data []byte) error {
 				ids = append(ids, tx.IdentityHash())
 			}
 		}
-		if s.n.ch.IsV2() && s.n.cfg.V2Pool != nil {
+		if s.n.ch.UsesV2Rules() && s.n.cfg.V2Pool != nil {
 			s.n.cfg.V2Pool.RemoveIDs(ids)
 			for _, tx := range s.n.ch.TakeReorgCandidates() {
 				if s.n.ch.HasConfirmedTransaction(tx.TxID) {
@@ -1021,7 +1021,7 @@ func (s *Session) acceptTx(data []byte) error {
 	if s.n.ch == nil {
 		return errors.New("chain unavailable")
 	}
-	if s.n.ch.IsV2() {
+	if s.n.ch.UsesV2Rules() {
 		if s.n.cfg.V2Pool == nil {
 			return errors.New("V2 mempool is unavailable")
 		}

@@ -184,7 +184,7 @@ func (a *API) transactions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.n.net.BroadcastTransaction(tx)
-		if a.n.chain.IsV2() {
+		if a.n.chain.UsesV2Rules() {
 			writeJSON(w, 202, map[string]any{"accepted": true, "version": 2, "tx_id": tx.TxID})
 		} else {
 			writeJSON(w, 202, map[string]any{"accepted": true, "version": 1, "tx_hash": tx.TxHash})
@@ -192,7 +192,7 @@ func (a *API) transactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		if a.n.chain.IsV2() {
+		if a.n.chain.UsesV2Rules() {
 			writeJSON(w, 200, map[string]any{"count": a.n.v2pool.Len(), "version": 2})
 		} else {
 			writeJSON(w, 200, map[string]any{"count": a.n.pool.Len(), "version": 1})
@@ -214,7 +214,7 @@ func (a *API) mine(w http.ResponseWriter, r *http.Request) {
 	// a redirection feature nobody asked for.
 	receiver := a.n.id.Address
 	var txs []transaction.Transaction
-	if a.n.chain.IsV2() {
+	if a.n.chain.UsesV2Rules() {
 		if a.n.v2pool == nil {
 			writeJSON(w, 500, map[string]string{"error": "V2 mempool unavailable"})
 			return
@@ -223,8 +223,11 @@ func (a *API) mine(w http.ResponseWriter, r *http.Request) {
 	} else {
 		txs = a.n.pool.List(500)
 	}
-	b, e := MineNext(a.n.chain, receiver, txs)
+	b, e := MineNextWithClockSafety(a.n.chain, receiver, txs, a.n.clock, a.n.peerMedian)
 	if e != nil {
+		if a.n.chain.ProtocolVersion() >= 3 {
+			a.n.log.Warn("V3 mining refused", "reason", e.Error())
+		}
 		writeJSON(w, 400, map[string]string{"error": e.Error()})
 		return
 	}
@@ -239,7 +242,7 @@ func (a *API) mine(w http.ResponseWriter, r *http.Request) {
 			ids = append(ids, tx.IdentityHash())
 		}
 	}
-	if a.n.chain.IsV2() {
+	if a.n.chain.UsesV2Rules() {
 		a.n.v2pool.RemoveIDs(ids)
 	} else {
 		a.n.pool.RemoveHashes(ids)

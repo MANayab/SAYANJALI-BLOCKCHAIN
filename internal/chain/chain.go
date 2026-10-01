@@ -7,6 +7,9 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"time"
+
+	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/clock"
 
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/block"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/consensus"
@@ -35,6 +38,7 @@ type Chain struct {
 	protocolVersion uint8
 	networkID       string
 	networkName     string
+	clock           clock.Clock
 	nonces          map[string]uint64
 	stateSnapshots  map[string]*statecommitment.Snapshot
 	stateRoot       string
@@ -43,6 +47,26 @@ type Chain struct {
 
 func Open(store *storage.Store) (*Chain, error) {
 	return openWithProtocol(store, nil, 1, "", "")
+}
+
+// OpenV3WithGenesisState opens the V3 C-1 protocol while preserving the
+// existing V2 economic/state architecture. V3 Merkle activation is explicitly
+// not enabled by this constructor.
+func OpenV3WithGenesisState(store *storage.Store, genesisState tokenomics.GenesisState, networkID, networkName string) (*Chain, error) {
+	if err := genesisState.Validate(wallet.ValidAddress); err != nil {
+		return nil, err
+	}
+	if err := networkid.ValidateHex64(networkID); err != nil {
+		return nil, err
+	}
+	wireName, err := networkid.WireNetworkName(networkID)
+	if err != nil {
+		return nil, err
+	}
+	if networkName != wireName {
+		return nil, errors.New("V3 network name does not match network id")
+	}
+	return openWithProtocol(store, &genesisState, 3, networkID, networkName)
 }
 
 // OpenV2WithGenesisState opens a V2 consensus chain bound to an explicit network identity.
@@ -75,6 +99,13 @@ func OpenWithGenesisState(store *storage.Store, genesisState tokenomics.GenesisS
 }
 
 func openWithProtocol(store *storage.Store, genesisState *tokenomics.GenesisState, protocolVersion uint8, networkID, networkName string) (*Chain, error) {
+	return openWithProtocolAndClock(store, genesisState, protocolVersion, networkID, networkName, clock.RealClock{})
+}
+
+func openWithProtocolAndClock(store *storage.Store, genesisState *tokenomics.GenesisState, protocolVersion uint8, networkID, networkName string, clk clock.Clock) (*Chain, error) {
+	if clk == nil {
+		clk = clock.RealClock{}
+	}
 	c := &Chain{
 		store:           store,
 		blocks:          make(map[string]*block.Block),
@@ -84,6 +115,7 @@ func openWithProtocol(store *storage.Store, genesisState *tokenomics.GenesisStat
 		protocolVersion: protocolVersion,
 		networkID:       networkID,
 		networkName:     networkName,
+		clock:           clk,
 		nonces:          make(map[string]uint64),
 		stateSnapshots:  make(map[string]*statecommitment.Snapshot),
 	}
@@ -143,8 +175,8 @@ func ValidateChain(ch []*block.Block) error {
 }
 
 func (c *Chain) validateChain(ch []*block.Block) error {
-	if c.protocolVersion == 2 {
-		return validateChainV2(ch, c.genesisState, c.networkID)
+	if c.protocolVersion >= 2 {
+		return validateChainV2(ch, c.genesisState, c.networkID, c.protocolVersion)
 	}
 	return validateChainWithState(ch, c.genesisState)
 }
@@ -158,14 +190,14 @@ func validateChainWithState(ch []*block.Block, genesisState *tokenomics.GenesisS
 	}
 	cfg := protocol.DefaultDifficultyConfig()
 	for i := 1; i < len(ch); i++ {
-		if err := validateNext(ch[i], ch[:i], cfg, genesisState); err != nil {
+		if err := validateNext(ch[i], ch[:i], cfg, genesisState, 1); err != nil {
 			return fmt.Errorf("block %d: %w", ch[i].Index, err)
 		}
 	}
 	return nil
 }
 
-func validateNext(b *block.Block, prefix []*block.Block, cfg protocol.DifficultyConfig, genesisState *tokenomics.GenesisState) error {
+func validateNext(b *block.Block, prefix []*block.Block, cfg protocol.DifficultyConfig, genesisState *tokenomics.GenesisState, protocolVersion uint8) error {
 	p := prefix[len(prefix)-1]
 	if b.Index != p.Index+1 {
 		return errors.New("non-sequential block index")
@@ -173,7 +205,7 @@ func validateNext(b *block.Block, prefix []*block.Block, cfg protocol.Difficulty
 	if b.PreviousHash != p.Hash {
 		return errors.New("previous hash mismatch")
 	}
-	if err := validateTimestamp(b.Timestamp, prefix); err != nil {
+	if err := validateTimestampForProtocol(b.Timestamp, prefix, protocolVersion); err != nil {
 		return err
 	}
 	var reward uint64
@@ -214,24 +246,15 @@ func validateNext(b *block.Block, prefix []*block.Block, cfg protocol.Difficulty
 // difficulty remains in force. This keeps the Go node from feeding a short
 // window into the frozen Python Fraction-based retarget routine.
 const (
-	// TimestampFutureStepSeconds is a deterministic consensus bound on how
-	// far a block may advance beyond the parent/median time. It is deliberately
-	// expressed only in terms of chain history so all nodes make the same
-	// consensus decision without depending on their local wall clocks.
+	// TimestampFutureStepSeconds is the frozen V1/V2 parent-relative bound.
+	// V3 does not use this as its future-time ceiling.
 	TimestampFutureStepSeconds = int64(4) * protocol.TargetBlockTimeSeconds
 	TimestampMTPWindow         = 11
 )
 
-func validateTimestamp(timestamp float64, prefix []*block.Block) error {
+func medianTimePast(prefix []*block.Block) (float64, error) {
 	if len(prefix) == 0 {
-		return errors.New("timestamp validation requires a parent")
-	}
-	if timestamp != timestamp || timestamp < 0 || timestamp > float64(^uint64(0)) || timestamp != float64(int64(timestamp)) {
-		return errors.New("invalid block timestamp: consensus timestamps must be integer seconds")
-	}
-	parent := prefix[len(prefix)-1].Timestamp
-	if timestamp <= parent {
-		return errors.New("timestamp must increase")
+		return 0, errors.New("median-time-past requires a parent")
 	}
 	start := len(prefix) - TimestampMTPWindow
 	if start < 0 {
@@ -242,13 +265,32 @@ func validateTimestamp(timestamp float64, prefix []*block.Block) error {
 		vals = append(vals, prefix[i].Timestamp)
 	}
 	sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
-	mtp := vals[len(vals)/2]
+	return vals[len(vals)/2], nil
+}
+
+func validateTimestampForProtocol(timestamp float64, prefix []*block.Block, protocolVersion uint8) error {
+	if len(prefix) == 0 {
+		return errors.New("timestamp validation requires a parent")
+	}
+	if timestamp != timestamp || timestamp < 0 || timestamp > float64(^uint64(0)) || timestamp != float64(int64(timestamp)) {
+		return errors.New("invalid block timestamp: consensus timestamps must be integer seconds")
+	}
+	parent := prefix[len(prefix)-1].Timestamp
+	mtp, err := medianTimePast(prefix)
+	if err != nil {
+		return err
+	}
 	if timestamp <= mtp {
 		return errors.New("timestamp must be greater than median-time-past")
 	}
-	max := parent + float64(TimestampFutureStepSeconds)
-	if timestamp > max {
-		return fmt.Errorf("timestamp exceeds deterministic future-time bound %.0f", max)
+	if timestamp <= parent {
+		return errors.New("timestamp must increase")
+	}
+	if protocolVersion < 3 {
+		max := parent + float64(TimestampFutureStepSeconds)
+		if timestamp > max {
+			return fmt.Errorf("timestamp exceeds deterministic future-time bound %.0f", max)
+		}
 	}
 	return nil
 }
@@ -523,7 +565,7 @@ func (c *Chain) buildChain(tip string) ([]*block.Block, error) {
 	return rev, nil
 }
 func (c *Chain) replayState(ch []*block.Block) error {
-	if c.protocolVersion == 2 {
+	if c.protocolVersion >= 2 {
 		return c.replayStateV2(ch)
 	}
 	balances, genesisSupply, miningIssued, supply, err := replayBalances(ch, c.genesisState)
@@ -695,7 +737,7 @@ func applyIncrementalBlock(s *statecommitment.Snapshot, b *block.Block, reward u
 	if b.Index == 0 {
 		return nil
 	}
-	if protocolVersion == 2 {
+	if protocolVersion >= 2 {
 		return applyIncrementalV2(s, b, reward, networkID)
 	}
 	return applyIncrementalV1(s, b, reward, genesisState)
@@ -766,12 +808,12 @@ func validateIncrementalBlock(b *block.Block, prefix []*block.Block, parent *sta
 	if b.PreviousHash != p.Hash {
 		return nil, errors.New("previous hash mismatch")
 	}
-	if err := validateTimestamp(b.Timestamp, prefix); err != nil {
+	if err := validateTimestampForProtocol(b.Timestamp, prefix, protocolVersion); err != nil {
 		return nil, err
 	}
 	var reward uint64
 	var ok bool
-	if protocolVersion == 2 {
+	if protocolVersion >= 2 {
 		reward, ok = consensus.ExpectedMiningReward(parent.MiningIssued)
 	} else if genesisState != nil {
 		reward, ok = consensus.ExpectedMiningReward(parent.MiningIssued)
@@ -788,7 +830,7 @@ func validateIncrementalBlock(b *block.Block, prefix []*block.Block, parent *sta
 	if b.Difficulty != expected {
 		return nil, fmt.Errorf("difficulty %d != required %d", b.Difficulty, expected)
 	}
-	if protocolVersion == 2 {
+	if protocolVersion >= 2 {
 		if err := validateV2TransactionsAndStateStructure(prefix, b, networkID, reward); err != nil {
 			return nil, err
 		}
@@ -900,6 +942,12 @@ func (c *Chain) Accept(b *block.Block) (bool, string, error) {
 		return false, "unknown_ancestor", err
 	}
 
+	if c.protocolVersion >= 3 {
+		if err := c.validateV3IngressTimestamp(b.Timestamp, prefix); err != nil {
+			return false, "invalid_ingress_time", err
+		}
+	}
+
 	parentState, err := c.stateForParent(prefix)
 	if err != nil {
 		return false, "state", err
@@ -962,7 +1010,7 @@ func (c *Chain) Accept(b *block.Block) (bool, string, error) {
 			return false, "storage", err
 		}
 
-		if c.protocolVersion == 2 {
+		if c.protocolVersion >= 2 {
 			common := -1
 			limit := len(prefix)
 			if len(c.active) < limit {
@@ -1024,6 +1072,40 @@ func (c *Chain) Accept(b *block.Block) (bool, string, error) {
 	}
 
 	return true, "fork", nil
+}
+
+func (c *Chain) SetClock(clk clock.Clock) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if clk == nil {
+		clk = clock.RealClock{}
+	}
+	c.clock = clk
+}
+
+func (c *Chain) MedianTimePast() (time.Time, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.active) == 0 {
+		return time.Time{}, false
+	}
+	mtp, err := medianTimePast(c.active)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(mtp), 0), true
+}
+
+func (c *Chain) validateV3IngressTimestamp(timestamp float64, prefix []*block.Block) error {
+	if err := validateTimestampForProtocol(timestamp, prefix, 3); err != nil {
+		return err
+	}
+	now := c.clock.Now().Unix()
+	max := float64(now + int64(protocol.V3FutureTimeBound/time.Second))
+	if timestamp > max {
+		return fmt.Errorf("V3 ingress timestamp exceeds current clock by more than %d seconds", int64(protocol.V3FutureTimeBound/time.Second))
+	}
+	return nil
 }
 
 func (c *Chain) Tip() *block.Block {
@@ -1109,6 +1191,7 @@ func (c *Chain) GenesisSupply() uint64  { c.mu.RLock(); defer c.mu.RUnlock(); re
 func (c *Chain) MiningIssued() uint64   { c.mu.RLock(); defer c.mu.RUnlock(); return c.miningIssued }
 func (c *Chain) IsPhase7() bool         { c.mu.RLock(); defer c.mu.RUnlock(); return c.genesisState != nil }
 func (c *Chain) IsV2() bool             { c.mu.RLock(); defer c.mu.RUnlock(); return c.protocolVersion == 2 }
+func (c *Chain) UsesV2Rules() bool      { c.mu.RLock(); defer c.mu.RUnlock(); return c.protocolVersion >= 2 }
 func (c *Chain) StateRoot() string      { c.mu.RLock(); defer c.mu.RUnlock(); return c.stateRoot }
 func (c *Chain) ProtocolVersion() uint8 { c.mu.RLock(); defer c.mu.RUnlock(); return c.protocolVersion }
 func (c *Chain) NetworkID() string      { c.mu.RLock(); defer c.mu.RUnlock(); return c.networkID }
