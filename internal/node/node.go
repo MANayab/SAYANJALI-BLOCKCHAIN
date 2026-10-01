@@ -13,9 +13,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/block"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/chain"
+	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/clock"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/consensus"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/genesis"
 	"github.com/SHalimoosavi/SAYANJALI-BLOCKCHAIN/internal/identity"
@@ -115,19 +117,21 @@ func SaveDefaultConfig(path string, c Config) error {
 }
 
 type Node struct {
-	cfg      Config
-	log      *slog.Logger
-	id       *identity.Identity
-	store    *storage.Store
-	chain    *chain.Chain
-	pool     *mempool.Pool
-	v2pool   *mempool.V2Pool
-	net      *p2pnode.Network
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stopOnce sync.Once
-	done     chan struct{}
-	running  atomic.Bool
+	cfg        Config
+	log        *slog.Logger
+	id         *identity.Identity
+	store      *storage.Store
+	chain      *chain.Chain
+	pool       *mempool.Pool
+	v2pool     *mempool.V2Pool
+	net        *p2pnode.Network
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stopOnce   sync.Once
+	done       chan struct{}
+	running    atomic.Bool
+	clock      clock.Clock
+	peerMedian clock.PeerMedian
 }
 
 func (c Config) ValidateTransport() error {
@@ -163,16 +167,16 @@ func isLoopbackListenAddress(addr string) bool {
 
 func New(cfg Config) *Node {
 	h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{})
-	return &Node{cfg: cfg, log: slog.New(h), done: make(chan struct{})}
+	return &Node{cfg: cfg, log: slog.New(h), done: make(chan struct{}), clock: clock.RealClock{}, peerMedian: clock.UnavailablePeerMedian{}}
 }
 func (n *Node) Start(ctx context.Context) (retErr error) {
-	if n.cfg.ProtocolVersion != 0 && n.cfg.ProtocolVersion != 1 && n.cfg.ProtocolVersion != 2 {
+	if n.cfg.ProtocolVersion != 0 && n.cfg.ProtocolVersion != 1 && n.cfg.ProtocolVersion != 2 && n.cfg.ProtocolVersion != 3 {
 		return errors.New("unsupported consensus protocol version")
 	}
-	if n.cfg.ProtocolVersion != 2 && !isLoopbackListenAddress(n.cfg.ListenAddress) {
+	if n.cfg.ProtocolVersion < 2 && !isLoopbackListenAddress(n.cfg.ListenAddress) {
 		return errors.New("legacy V1 consensus is restricted to loopback/private development; public nodes require protocol version 2")
 	}
-	if n.cfg.ProtocolVersion != 2 && strings.HasPrefix(n.cfg.NetworkName, networkid.V2WirePrefix) {
+	if n.cfg.ProtocolVersion < 2 && strings.HasPrefix(n.cfg.NetworkName, networkid.V2WirePrefix) {
 		return errors.New("V2 network identity requires consensus protocol version 2")
 	}
 	if err := os.MkdirAll(n.cfg.DataDir, 0700); err != nil {
@@ -208,7 +212,7 @@ func (n *Node) Start(ctx context.Context) (retErr error) {
 
 	n.store = st
 	var ch *chain.Chain
-	if n.cfg.ProtocolVersion == 2 {
+	if n.cfg.ProtocolVersion >= 2 {
 		if n.cfg.Phase7GenesisStatePath == "" || n.cfg.Phase7GenesisCommitment == "" {
 			return errors.New("V2 network requires GenesisState path and commitment")
 		}
@@ -233,26 +237,39 @@ func (n *Node) Start(ctx context.Context) (retErr error) {
 		if err != nil {
 			return err
 		}
-		effectiveID, _, err := networkid.EffectiveNetworkID(networkid.Inputs{ConsensusProtocolVersion: 2, GenesisStateCommitment: commitment, HistoricalGenesisHash: g.Hash, NetworkName: n.cfg.GenesisNetworkName})
-		if err != nil {
-			return err
-		}
-		if n.cfg.NetworkID != effectiveID {
-			return errors.New("V2 EffectiveNetworkID mismatch")
-		}
-		if n.cfg.GenesisNetworkName == tokenomics.Phase7NetworkName && effectiveID != "237a1934769295c63fe47771a4996b17c3899e52f6bacf79ed7edefec90eaaf3" {
-			return errors.New("audited Phase 7 private-testnet EffectiveNetworkID mismatch")
+		var effectiveID string
+		if n.cfg.ProtocolVersion == 2 {
+			effectiveID, _, err = networkid.EffectiveNetworkID(networkid.Inputs{ConsensusProtocolVersion: 2, GenesisStateCommitment: commitment, HistoricalGenesisHash: g.Hash, NetworkName: n.cfg.GenesisNetworkName})
+			if err != nil {
+				return err
+			}
+			if n.cfg.NetworkID != effectiveID {
+				return errors.New("V2 EffectiveNetworkID mismatch")
+			}
+			if n.cfg.GenesisNetworkName == tokenomics.Phase7NetworkName && effectiveID != "237a1934769295c63fe47771a4996b17c3899e52f6bacf79ed7edefec90eaaf3" {
+				return errors.New("audited Phase 7 private-testnet EffectiveNetworkID mismatch")
+			}
+		} else {
+			if err := networkid.ValidateHex64(n.cfg.NetworkID); err != nil {
+				return fmt.Errorf("V3 network id invalid: %w", err)
+			}
+			effectiveID = n.cfg.NetworkID
 		}
 		wire, err := networkid.WireNetworkName(effectiveID)
 		if err != nil {
 			return err
 		}
 		if n.cfg.NetworkName != wire {
-			return errors.New("V2 network name mismatch")
+			return errors.New("protocol 2/3 network name mismatch")
 		}
-		opened, openErr := chain.OpenV2WithGenesisState(st, gs, effectiveID, wire)
-		if openErr != nil {
-			return openErr
+		var opened *chain.Chain
+		if n.cfg.ProtocolVersion == 3 {
+			opened, err = chain.OpenV3WithGenesisState(st, gs, effectiveID, wire)
+		} else {
+			opened, err = chain.OpenV2WithGenesisState(st, gs, effectiveID, wire)
+		}
+		if err != nil {
+			return err
 		}
 		ch = opened
 	} else if n.cfg.NetworkName == tokenomics.Phase7NetworkName {
@@ -293,8 +310,9 @@ func (n *Node) Start(ctx context.Context) (retErr error) {
 		return errors.New("genesis initialization failure")
 	}
 	n.chain = ch
+	n.chain.SetClock(n.clock)
 	n.pool = mempool.New(n.cfg.MempoolMax)
-	if n.cfg.ProtocolVersion == 2 {
+	if n.cfg.ProtocolVersion >= 2 {
 		n.v2pool = mempool.NewV2(n.cfg.MempoolMax)
 	}
 	gHash := g.Hash
@@ -343,7 +361,7 @@ func (n *Node) SubmitTransaction(tx transaction.Transaction) error {
 		return errors.New("node not started")
 	}
 
-	if n.chain.IsV2() {
+	if n.chain.UsesV2Rules() {
 		if n.v2pool == nil {
 			return errors.New("V2 mempool unavailable")
 		}
@@ -367,6 +385,23 @@ func (n *Node) SubmitTransaction(tx transaction.Transaction) error {
 	}
 	return n.pool.Add(tx, n.chain.Balance)
 }
+func (n *Node) SetClock(clk clock.Clock) {
+	if clk == nil {
+		clk = clock.RealClock{}
+	}
+	n.clock = clk
+	if n.chain != nil {
+		n.chain.SetClock(clk)
+	}
+}
+
+func (n *Node) SetPeerMedianProvider(provider clock.PeerMedian) {
+	if provider == nil {
+		provider = clock.UnavailablePeerMedian{}
+	}
+	n.peerMedian = provider
+}
+
 func (n *Node) Status() map[string]any {
 	m := map[string]any{"running": n.running.Load(), "network": n.cfg.NetworkName}
 	if n.chain != nil {
@@ -378,7 +413,7 @@ func (n *Node) Status() map[string]any {
 		m["mining_issued_base_units"] = n.chain.MiningIssued()
 		m["phase7"] = n.chain.IsPhase7()
 		m["protocol_version"] = n.chain.ProtocolVersion()
-		if n.chain.IsV2() {
+		if n.chain.UsesV2Rules() {
 			m["network_id"] = n.chain.NetworkID()
 		}
 	}
@@ -392,6 +427,29 @@ func (n *Node) Status() map[string]any {
 	return m
 }
 func MineNext(ch *chain.Chain, receiver string, txs []transaction.Transaction) (*block.Block, error) {
+	return MineNextWithClockSafety(ch, receiver, txs, clock.RealClock{}, clock.UnavailablePeerMedian{})
+}
+
+func MineNextWithClockSafety(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian) (*block.Block, error) {
+	if clk == nil {
+		clk = clock.RealClock{}
+	}
+	if peerMedian == nil {
+		peerMedian = clock.UnavailablePeerMedian{}
+	}
+	if ch.ProtocolVersion() >= 3 {
+		peerTime, ok := peerMedian.MedianTime()
+		if !ok {
+			return nil, errors.New("V3 mining refused: peer median clock unavailable")
+		}
+		delta := clk.Now().Sub(peerTime)
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > protocol.V3MiningClockSkewLimit {
+			return nil, fmt.Errorf("V3 mining refused: local clock differs from peer median by %s (> %s)", delta.Round(time.Second), protocol.V3MiningClockSkewLimit)
+		}
+	}
 	tip := ch.Tip()
 	var reward uint64
 	var ok bool
@@ -403,13 +461,23 @@ func MineNext(ch *chain.Chain, receiver string, txs []transaction.Transaction) (
 	if !ok {
 		return nil, errors.New("no reward remains")
 	}
-	// Mining timestamps are deterministic consensus values.
-	// Parent + 1 is greater than the parent and median-time-past,
-	// while remaining inside the deterministic future-time bound.
 	timestamp := tip.Timestamp + 1
+	if ch.ProtocolVersion() >= 3 {
+		mtp, ok := ch.MedianTimePast()
+		if !ok {
+			return nil, errors.New("V3 mining refused: median-time-past unavailable")
+		}
+		minimum := mtp.Unix() + 1
+		now := clk.Now().Unix()
+		if now > minimum {
+			timestamp = float64(now)
+		} else {
+			timestamp = float64(minimum)
+		}
+	}
 	var coin transaction.Transaction
 	var err error
-	if ch.IsV2() {
+	if ch.UsesV2Rules() {
 		coin, err = transaction.NewV2Coinbase(receiver, ch.NetworkID(), reward, timestamp)
 		if err != nil {
 			return nil, err
