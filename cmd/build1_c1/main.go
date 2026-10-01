@@ -78,7 +78,7 @@ func main() {
 	}
 	c.SetClock(clock.FixedClock{Current: fixed})
 
-	r := rand.New(rand.NewSource(seed))
+	r := rand.New(rand.NewSource(seed)) // #nosec G404 -- deterministic harness PRNG; not used for security
 	accepted, rejected := 0, 0
 	difficultyObservations := make([]int, 0, 64)
 	for i := 1; i <= 64; i++ {
