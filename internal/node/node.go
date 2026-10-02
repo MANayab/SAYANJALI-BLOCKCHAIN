@@ -31,34 +31,40 @@ import (
 )
 
 type Config struct {
-	DataDir                 string   `json:"data_dir"`
-	NetworkName             string   `json:"network_name"`
-	ListenAddress           string   `json:"listen_address"`
-	AdvertisedAddress       string   `json:"advertised_address"`
-	Seeds                   []string `json:"seeds"`
-	MaxPeers                int      `json:"max_peers"`
-	APIListenAddress        string   `json:"api_listen_address"`
-	MempoolMax              int      `json:"mempool_max"`
-	LogLevel                string   `json:"log_level"`
-	Phase7GenesisStatePath  string   `json:"phase7_genesis_state_path,omitempty"`
-	Phase7GenesisCommitment string   `json:"phase7_genesis_commitment,omitempty"`
-	ProtocolVersion         uint8    `json:"protocol_version,omitempty"`
-	NetworkID               string   `json:"network_id,omitempty"`
-	GenesisNetworkName      string   `json:"genesis_network_name,omitempty"`
-	APIAuthToken            string   `json:"api_auth_token,omitempty"`
-	APIUseTLS               bool     `json:"api_use_tls,omitempty"`
-	APIRequireTLS           bool     `json:"api_require_tls,omitempty"`
-	APITLSCertFile          string   `json:"api_tls_cert_file,omitempty"`
-	APITLSKeyFile           string   `json:"api_tls_key_file,omitempty"`
-	P2PUseTLS               bool     `json:"p2p_use_tls,omitempty"`
-	P2PTLSCertFile          string   `json:"p2p_tls_cert_file,omitempty"`
-	P2PTLSKeyFile           string   `json:"p2p_tls_key_file,omitempty"`
-	P2PTLSCAFile            string   `json:"p2p_tls_ca_file,omitempty"`
-	P2PTLSServerName        string   `json:"p2p_tls_server_name,omitempty"`
+	DataDir                           string   `json:"data_dir"`
+	NetworkName                       string   `json:"network_name"`
+	ListenAddress                     string   `json:"listen_address"`
+	AdvertisedAddress                 string   `json:"advertised_address"`
+	Seeds                             []string `json:"seeds"`
+	MaxPeers                          int      `json:"max_peers"`
+	APIListenAddress                  string   `json:"api_listen_address"`
+	MempoolMax                        int      `json:"mempool_max"`
+	LogLevel                          string   `json:"log_level"`
+	Phase7GenesisStatePath            string   `json:"phase7_genesis_state_path,omitempty"`
+	Phase7GenesisCommitment           string   `json:"phase7_genesis_commitment,omitempty"`
+	ProtocolVersion                   uint8    `json:"protocol_version,omitempty"`
+	NetworkID                         string   `json:"network_id,omitempty"`
+	GenesisNetworkName                string   `json:"genesis_network_name,omitempty"`
+	APIAuthToken                      string   `json:"api_auth_token,omitempty"`
+	APIUseTLS                         bool     `json:"api_use_tls,omitempty"`
+	APIRequireTLS                     bool     `json:"api_require_tls,omitempty"`
+	V3SoloBootstrapMining             bool     `json:"v3_solo_bootstrap_mining,omitempty"`
+	V3SoloBootstrapClockSanitySeconds int64    `json:"v3_solo_bootstrap_clock_sanity_seconds,omitempty"`
+	APITLSCertFile                    string   `json:"api_tls_cert_file,omitempty"`
+	APITLSKeyFile                     string   `json:"api_tls_key_file,omitempty"`
+	P2PUseTLS                         bool     `json:"p2p_use_tls,omitempty"`
+	P2PTLSCertFile                    string   `json:"p2p_tls_cert_file,omitempty"`
+	P2PTLSKeyFile                     string   `json:"p2p_tls_key_file,omitempty"`
+	P2PTLSCAFile                      string   `json:"p2p_tls_ca_file,omitempty"`
+	P2PTLSServerName                  string   `json:"p2p_tls_server_name,omitempty"`
 }
 
 func DefaultConfig(dataDir string) Config {
-	return Config{DataDir: dataDir, NetworkName: "sayanjali-mainnet-mvp", ListenAddress: "127.0.0.1:3030", AdvertisedAddress: "127.0.0.1:3030", MaxPeers: 32, APIListenAddress: "127.0.0.1:8080", MempoolMax: 1000, LogLevel: "INFO"}
+	return Config{
+		DataDir: dataDir, NetworkName: "sayanjali-mainnet-mvp", ListenAddress: "127.0.0.1:3030",
+		AdvertisedAddress: "127.0.0.1:3030", MaxPeers: 32, APIListenAddress: "127.0.0.1:8080",
+		MempoolMax: 1000, LogLevel: "INFO", V3SoloBootstrapClockSanitySeconds: int64(protocol.V3FutureTimeBound / time.Second),
+	}
 }
 func LoadConfig(path string, defaults Config) (Config, error) {
 	info, statErr := os.Stat(path)
@@ -99,6 +105,9 @@ func LoadConfig(path string, defaults Config) (Config, error) {
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = defaults.LogLevel
+	}
+	if c.V3SoloBootstrapClockSanitySeconds == 0 {
+		c.V3SoloBootstrapClockSanitySeconds = defaults.V3SoloBootstrapClockSanitySeconds
 	}
 	return c, nil
 }
@@ -183,6 +192,9 @@ func (n *Node) Start(ctx context.Context) (retErr error) {
 		return err
 	}
 	if err := n.cfg.ValidateTransport(); err != nil {
+		return err
+	}
+	if err := n.validateV3BootstrapConfig(); err != nil {
 		return err
 	}
 	id, created, err := identity.LoadOrCreate(filepath.Join(n.cfg.DataDir, "identity"))
@@ -311,6 +323,12 @@ func (n *Node) Start(ctx context.Context) (retErr error) {
 	}
 	n.chain = ch
 	n.chain.SetClock(n.clock)
+	if n.cfg.ProtocolVersion >= 3 && n.cfg.V3SoloBootstrapMining {
+		n.log.Warn("WARNING: V3 SOLO/BOOTSTRAP MINING MODE ENABLED",
+			"peer_median_required", false,
+			"operator_clock_required", true,
+			"purpose", "controlled network bootstrap/testing only")
+	}
 	n.pool = mempool.New(n.cfg.MempoolMax)
 	if n.cfg.ProtocolVersion >= 2 {
 		n.v2pool = mempool.NewV2(n.cfg.MempoolMax)
@@ -395,6 +413,17 @@ func (n *Node) SetClock(clk clock.Clock) {
 	}
 }
 
+func (n *Node) validateV3BootstrapConfig() error {
+	if n.cfg.ProtocolVersion < 3 {
+		return nil
+	}
+	max := int64(protocol.V3FutureTimeBound / time.Second)
+	if n.cfg.V3SoloBootstrapClockSanitySeconds < 1 || n.cfg.V3SoloBootstrapClockSanitySeconds > max {
+		return fmt.Errorf("V3 bootstrap clock sanity must be between 1 and %d seconds", max)
+	}
+	return nil
+}
+
 func (n *Node) SetPeerMedianProvider(provider clock.PeerMedian) {
 	if provider == nil {
 		provider = clock.UnavailablePeerMedian{}
@@ -431,6 +460,14 @@ func MineNext(ch *chain.Chain, receiver string, txs []transaction.Transaction) (
 }
 
 func MineNextWithClockSafety(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian) (*block.Block, error) {
+	return mineNextWithClockSafety(ch, receiver, txs, clk, peerMedian, false, 0)
+}
+
+func MineNextWithBootstrap(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian, bootstrapEnabled bool, sanitySeconds int64) (*block.Block, error) {
+	return mineNextWithClockSafety(ch, receiver, txs, clk, peerMedian, bootstrapEnabled, sanitySeconds)
+}
+
+func mineNextWithClockSafety(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian, bootstrapEnabled bool, sanitySeconds int64) (*block.Block, error) {
 	if clk == nil {
 		clk = clock.RealClock{}
 	}
@@ -440,14 +477,26 @@ func MineNextWithClockSafety(ch *chain.Chain, receiver string, txs []transaction
 	if ch.ProtocolVersion() >= 3 {
 		peerTime, ok := peerMedian.MedianTime()
 		if !ok {
-			return nil, errors.New("V3 mining refused: peer median clock unavailable")
-		}
-		delta := clk.Now().Sub(peerTime)
-		if delta < 0 {
-			delta = -delta
-		}
-		if delta > protocol.V3MiningClockSkewLimit {
-			return nil, fmt.Errorf("V3 mining refused: local clock differs from peer median by %s (> %s)", delta.Round(time.Second), protocol.V3MiningClockSkewLimit)
+			if !bootstrapEnabled {
+				return nil, errors.New("V3 mining refused: peer median clock unavailable")
+			}
+			mtp, ok := ch.MedianTimePast()
+			if !ok {
+				return nil, errors.New("V3 bootstrap mining refused: median-time-past unavailable")
+			}
+			now := clk.Now()
+			maxSanity := time.Duration(sanitySeconds) * time.Second
+			if now.Before(mtp) || now.After(mtp.Add(maxSanity)) {
+				return nil, fmt.Errorf("V3 bootstrap mining refused because local clock sanity validation failed: local=%s MTP=%s allowed_drift=%s", now.UTC().Format(time.RFC3339), mtp.UTC().Format(time.RFC3339), maxSanity)
+			}
+		} else {
+			delta := clk.Now().Sub(peerTime)
+			if delta < 0 {
+				delta = -delta
+			}
+			if delta > protocol.V3MiningClockSkewLimit {
+				return nil, fmt.Errorf("V3 mining refused: local clock differs from peer median by %s (> %s)", delta.Round(time.Second), protocol.V3MiningClockSkewLimit)
+			}
 		}
 	}
 	tip := ch.Tip()

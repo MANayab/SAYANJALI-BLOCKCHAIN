@@ -110,3 +110,44 @@ L-3 OPEN
 ## 8. Quality boundary
 
 This artifact does not claim production-ready, mainnet-ready, public-testnet-ready, or fully audited status.
+# Build 1.1 — C-1 Verification Closure + V3 Bootstrap
+
+## Scope
+
+Build 1.1 is limited to two maintenance objectives:
+
+- an instrumented counting-clock replay test proving historical V3 `Open()` / replay performs exactly zero `Clock.Now()` calls;
+- an explicit operator-controlled V3 solo/bootstrap mining mode, disabled by default, with deterministic local-clock sanity validation.
+
+No protocol version change, V3 consensus-rule change, P2P wire change, C-2 work, or other audit finding is included.
+
+## Bootstrap configuration
+
+`internal/node.Config` adds:
+
+- `V3SoloBootstrapMining` — explicit operator switch; default `false`;
+- `V3SoloBootstrapClockSanitySeconds` — default `300`, bounded to the existing V3 ingress future-time bound.
+
+Normal V3 mining remains unchanged when bootstrap mode is disabled: unavailable peer median causes the existing refusal.
+
+When explicitly enabled and peer median is unavailable, mining is permitted only when the local clock is within the configured sanity window relative to MTP. V3 `MTP + 1` and the first-ingress `+300s` consensus boundary remain unchanged.
+
+A prominent startup warning identifies bootstrap mode as controlled network bootstrap/testing only.
+
+## Verification status
+
+This implementation has not been declared verified from this environment.
+
+Current local toolchain:
+
+`go version go1.23.2 linux/amd64`
+
+Required:
+
+`go1.27.1`
+
+Required Build 1.1 validation: **NOT EXECUTED** because Go 1.27.1 is unavailable in the current execution environment.
+
+An attempted `GOTOOLCHAIN=local go test ./internal/chain ./internal/node -run 'TestC1' -count=1 -v` stopped at the module toolchain gate:
+
+`go: go.mod requires go >= 1.27 (running go 1.23.2; GOTOOLCHAIN=local)`

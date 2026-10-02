@@ -223,7 +223,7 @@ func (a *API) mine(w http.ResponseWriter, r *http.Request) {
 	} else {
 		txs = a.n.pool.List(500)
 	}
-	b, e := MineNextWithClockSafety(a.n.chain, receiver, txs, a.n.clock, a.n.peerMedian)
+	b, e := MineNextWithBootstrap(a.n.chain, receiver, txs, a.n.clock, a.n.peerMedian, a.n.cfg.V3SoloBootstrapMining, a.n.cfg.V3SoloBootstrapClockSanitySeconds)
 	if e != nil {
 		if a.n.chain.ProtocolVersion() >= 3 {
 			a.n.log.Warn("V3 mining refused", "reason", e.Error())

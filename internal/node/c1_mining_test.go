@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,66 @@ func newC1NodeChain(t *testing.T, now time.Time) *chain.Chain {
 	c.SetClock(clock.FixedClock{Current: now})
 	t.Cleanup(func() { _ = st.Close() })
 	return c
+}
+
+func TestC1V3BootstrapDefaultIsDisabled(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	if cfg.V3SoloBootstrapMining {
+		t.Fatal("V3 solo/bootstrap mining must be disabled by default")
+	}
+	if cfg.V3SoloBootstrapClockSanitySeconds != 300 {
+		t.Fatalf("default bootstrap clock sanity=%d want=300", cfg.V3SoloBootstrapClockSanitySeconds)
+	}
+}
+
+func TestC1V3BootstrapDisabledRefusesWithoutPeerMedian(t *testing.T) {
+	now := time.Unix(int64(protocol.GenesisTimestamp+100), 0)
+	c := newC1NodeChain(t, now)
+	_, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, false, 300)
+	if err == nil || err.Error() != "V3 mining refused: peer median clock unavailable" {
+		t.Fatalf("bootstrap-disabled mining error=%v", err)
+	}
+}
+
+func TestC1V3BootstrapEnabledAllowsValidLocalClock(t *testing.T) {
+	now := time.Unix(int64(protocol.GenesisTimestamp+100), 0)
+	c := newC1NodeChain(t, now)
+	b, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, true, 300)
+	if err != nil {
+		t.Fatalf("bootstrap mining refused with valid local clock: %v", err)
+	}
+	mtp, ok := c.MedianTimePast()
+	if !ok {
+		t.Fatal("median-time-past unavailable")
+	}
+	if b.Timestamp < float64(mtp.Unix()+1) {
+		t.Fatalf("bootstrap timestamp=%v below MTP+1=%d", b.Timestamp, mtp.Unix()+1)
+	}
+}
+
+func TestC1V3BootstrapClockSanityFailure(t *testing.T) {
+	now := time.Unix(int64(protocol.GenesisTimestamp+301), 0)
+	c := newC1NodeChain(t, now)
+	_, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, true, 300)
+	if err == nil || !strings.Contains(err.Error(), "V3 bootstrap mining refused because local clock sanity validation failed") {
+		t.Fatalf("expected local clock sanity refusal, got %v", err)
+	}
+}
+
+func TestC1V3BootstrapStillUsesConsensusIngressBoundary(t *testing.T) {
+	now := time.Unix(int64(protocol.GenesisTimestamp+100), 0)
+	c := newC1NodeChain(t, now)
+	b, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, true, 300)
+	if err != nil {
+		t.Fatalf("bootstrap mining failed: %v", err)
+	}
+	if b.Timestamp < float64(c.Tip().Timestamp+1) {
+		t.Fatalf("bootstrap timestamp=%v below parent+1=%v", b.Timestamp, c.Tip().Timestamp+1)
+	}
+	ok, _, err := c.Accept(b)
+	if err != nil || !ok {
+		t.Fatalf("valid bootstrap block rejected at ingress: ok=%v err=%v", ok, err)
+	}
 }
 
 func TestC1V3MiningClockSafety(t *testing.T) {

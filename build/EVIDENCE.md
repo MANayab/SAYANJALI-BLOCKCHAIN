@@ -303,3 +303,105 @@ Accordingly, the final C-1 status remains:
 **DONE-NOT-VERIFIED**
 
 The implementation is not being represented as production-ready, mainnet-ready, public-testnet-ready, or fully audited.
+## Build 1.1 maintenance patch
+
+Build 1.1 scope is restricted to:
+
+1. `TestC1V3ReplayDoesNotCallClockNow` — a counting-clock proof that opening and replaying persisted V3 history performs exactly zero `Clock.Now()` calls.
+2. Explicit `V3SoloBootstrapMining` operator mode, disabled by default, with a bounded local-clock sanity check.
+
+No protocol version change, V3 consensus-rule change, P2P wire-format change, C-2 implementation, or H/M finding implementation was performed.
+
+### Bootstrap behavior
+
+Default configuration sets:
+
+- `V3SoloBootstrapMining = false`
+- `V3SoloBootstrapClockSanitySeconds = 300`
+
+When disabled, unavailable peer median continues to produce:
+
+`V3 mining refused: peer median clock unavailable`
+
+When explicitly enabled, the miner may proceed without peer median only if the local clock is not before MTP and is no more than the configured sanity window ahead of MTP. Otherwise it returns:
+
+`V3 bootstrap mining refused because local clock sanity validation failed: ...`
+
+The miner still selects timestamps using the existing V3 `max(local clock, MTP+1)` rule, and block ingress still uses the existing 300-second first-ingress bound.
+
+### Validation limitation
+
+Required exact toolchain:
+
+`go1.27.1`
+
+Current audit environment:
+
+`go version go1.23.2 linux/amd64`
+
+Required Build 1.1 validation is **NOT EXECUTED**.
+
+The local exact-toolchain attempt was:
+
+`GOTOOLCHAIN=local go test ./internal/chain ./internal/node -run 'TestC1' -count=1 -v`
+
+Actual result:
+
+`go: go.mod requires go >= 1.27 (running go 1.23.2; GOTOOLCHAIN=local)`
+
+No Go 1.27.1 test, race, build, vet, or harness results are claimed from this environment.
+
+## Build 1.1 changed-file audit
+
+Changed implementation/test files:
+
+- `internal/node/node.go`
+- `internal/node/api.go`
+- `internal/node/c1_mining_test.go`
+- `internal/chain/c1_time_test.go`
+
+Added verification workflow:
+
+- `.github/workflows/build1-c1-verification.yml`
+
+Added Build 1.1 patch evidence:
+
+- `build/build1.1.patch`
+
+No changes were made to:
+
+- `go.mod`
+- `go.sum`
+- `internal/p2pnode/network.go`
+- `pkg/protocol/v3params.go`
+- production consensus/state/PoW/transaction/tokenomics implementations.
+
+## Build 1.1 local evidence
+
+`gofmt -l .` was executed with the available Go formatter and produced empty output.
+
+Current local toolchain:
+
+`go version go1.23.2 linux/amd64`
+
+Required toolchain:
+
+`go1.27.1`
+
+`GOTOOLCHAIN=local go vet ./...` — **NOT EXECUTED**; the Go 1.23.2 toolchain is below the module's required Go 1.27 level.
+
+`GOTOOLCHAIN=local go build ./...` — **NOT EXECUTED**; same toolchain gate.
+
+`GOTOOLCHAIN=local go test ./...` — **NOT EXECUTED**; same toolchain gate.
+
+`GOTOOLCHAIN=local go test -race ./...` — **NOT EXECUTED**; same toolchain gate.
+
+Dedicated C-1 tests, zero-call replay test, bootstrap tests, and the deterministic harness under Go 1.27.1 are **NOT EXECUTED**.
+
+Actual toolchain-gate output:
+
+`go: go.mod requires go >= 1.27 (running go 1.23.2; GOTOOLCHAIN=local)`
+
+GitHub write/PR creation from this environment is **NOT EXECUTED** because the connected GitHub integration rejected branch creation with HTTP 403 `Resource not accessible by integration`.
+
+No claim is made that the Build 1.1 branch, commit, or PR exists remotely.
