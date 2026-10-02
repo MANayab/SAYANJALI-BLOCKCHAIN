@@ -1,0 +1,80 @@
+name: Build 1 C-1 Verification
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  build1-c1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Go 1.27.1
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.27.1"
+          cache: true
+
+      - name: Verify exact Go toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          test "$(go version | awk '{print $3}')" = "go1.27.1"
+          test "$(go env GOTOOLCHAIN)" = "local"
+
+      - name: Verify module dependency policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -E '^replace[[:space:]]' go.mod; then
+            echo "replace directives are forbidden for C-1 verification" >&2
+            exit 1
+          fi
+          go list -m all | grep -i 'decred/dcrd/dcrec/secp256k1/v4'
+
+      - name: gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: go test race
+        run: go test -race ./...
+
+      - name: C-1 deterministic tests
+        run: go test ./internal/chain ./internal/node -run 'TestC1' -count=1 -v
+
+      - name: V1/V2 compatibility
+        run: go test ./internal/chain -run '^TestC1V1V2TimestampCompatibility$' -count=1 -v
+
+      - name: Replay clock independence
+        run: go test ./internal/chain -run '^TestC1V3ReplayIsIndependentOfClock$' -count=1 -v
+
+      - name: Zero-call replay proof
+        run: go test ./internal/chain -run '^TestC1V3ReplayDoesNotCallClockNow$' -count=1 -v
+
+      - name: V3 bootstrap tests
+        run: go test ./internal/node -run 'TestC1V3Bootstrap|TestC1V3MiningClockSafety' -count=1 -v
+
+      - name: Deterministic restart/reload harness
+        run: go run ./cmd/build1_c1

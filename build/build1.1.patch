@@ -1,0 +1,410 @@
+--- a/internal/chain/c1_time_test.go
++++ b/internal/chain/c1_time_test.go
+@@ -14,6 +14,18 @@
+ 
+ const c1TestNetworkID = "1111111111111111111111111111111111111111111111111111111111111111"
+ 
++type countingClock struct {
++	now   time.Time
++	calls int
++}
++
++func (c *countingClock) Now() time.Time {
++	c.calls++
++	return c.now
++}
++
++func (c *countingClock) NowCalls() int { return c.calls }
++
+ func openC1V3(t *testing.T, dir string, clk clock.Clock) *Chain {
+ 	t.Helper()
+ 	st, err := storage.Open(dir)
+@@ -150,6 +162,49 @@
+ 	}
+ }
+ 
++func TestC1V3ReplayDoesNotCallClockNow(t *testing.T) {
++	dir := t.TempDir()
++	base := time.Unix(int64(protocol.GenesisTimestamp+1000), 0)
++	writeClock := &countingClock{now: base}
++	st, err := storage.Open(dir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	gs := phase7TestState(t)
++	c, err := openWithProtocolAndClock(st, &gs, 3, c1TestNetworkID, "syjnet-v2-"+c1TestNetworkID, writeClock)
++	if err != nil {
++		_ = st.Close()
++		t.Fatal(err)
++	}
++	b := c1V3Block(t, c, protocol.GenesisTimestamp+1001)
++	if ok, _, err := c.Accept(b); err != nil || !ok {
++		_ = st.Close()
++		t.Fatalf("accept: ok=%v err=%v", ok, err)
++	}
++	wantHeight, wantTip, wantRoot, wantWork := c.Height(), c.TipHash(), c.StateRoot(), c.Work().String()
++	if err := st.Close(); err != nil {
++		t.Fatal(err)
++	}
++
++	replayClock := &countingClock{now: base.Add(50 * 365 * 24 * time.Hour)}
++	replayStore, err := storage.Open(dir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	replayed, err := openWithProtocolAndClock(replayStore, &gs, 3, c1TestNetworkID, "syjnet-v2-"+c1TestNetworkID, replayClock)
++	if err != nil {
++		_ = replayStore.Close()
++		t.Fatal(err)
++	}
++	defer replayStore.Close()
++	if replayClock.NowCalls() != 0 {
++		t.Fatalf("historical replay called Clock.Now %d times; want exactly 0", replayClock.NowCalls())
++	}
++	if replayed.Height() != wantHeight || replayed.TipHash() != wantTip || replayed.StateRoot() != wantRoot || replayed.Work().String() != wantWork {
++		t.Fatalf("replay differs: height=%d tip=%s root=%s work=%s", replayed.Height(), replayed.TipHash(), replayed.StateRoot(), replayed.Work())
++	}
++}
++
+ func TestC1V3ProgressionsAndSeededInvalidFuture(t *testing.T) {
+ 	prefix := []*block.Block{{Header: block.Header{Timestamp: 100}}}
+ 	for _, delta := range []float64{1, 30, 120} {
+--- a/internal/node/api.go
++++ b/internal/node/api.go
+@@ -223,7 +223,7 @@
+ 	} else {
+ 		txs = a.n.pool.List(500)
+ 	}
+-	b, e := MineNextWithClockSafety(a.n.chain, receiver, txs, a.n.clock, a.n.peerMedian)
++	b, e := MineNextWithBootstrap(a.n.chain, receiver, txs, a.n.clock, a.n.peerMedian, a.n.cfg.V3SoloBootstrapMining, a.n.cfg.V3SoloBootstrapClockSanitySeconds)
+ 	if e != nil {
+ 		if a.n.chain.ProtocolVersion() >= 3 {
+ 			a.n.log.Warn("V3 mining refused", "reason", e.Error())
+--- a/internal/node/c1_mining_test.go
++++ b/internal/node/c1_mining_test.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"fmt"
++	"strings"
+ 	"testing"
+ 	"time"
+ 
+@@ -55,6 +56,66 @@
+ 	return c
+ }
+ 
++func TestC1V3BootstrapDefaultIsDisabled(t *testing.T) {
++	cfg := DefaultConfig(t.TempDir())
++	if cfg.V3SoloBootstrapMining {
++		t.Fatal("V3 solo/bootstrap mining must be disabled by default")
++	}
++	if cfg.V3SoloBootstrapClockSanitySeconds != 300 {
++		t.Fatalf("default bootstrap clock sanity=%d want=300", cfg.V3SoloBootstrapClockSanitySeconds)
++	}
++}
++
++func TestC1V3BootstrapDisabledRefusesWithoutPeerMedian(t *testing.T) {
++	now := time.Unix(int64(protocol.GenesisTimestamp+100), 0)
++	c := newC1NodeChain(t, now)
++	_, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, false, 300)
++	if err == nil || err.Error() != "V3 mining refused: peer median clock unavailable" {
++		t.Fatalf("bootstrap-disabled mining error=%v", err)
++	}
++}
++
++func TestC1V3BootstrapEnabledAllowsValidLocalClock(t *testing.T) {
++	now := time.Unix(int64(protocol.GenesisTimestamp+100), 0)
++	c := newC1NodeChain(t, now)
++	b, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, true, 300)
++	if err != nil {
++		t.Fatalf("bootstrap mining refused with valid local clock: %v", err)
++	}
++	mtp, ok := c.MedianTimePast()
++	if !ok {
++		t.Fatal("median-time-past unavailable")
++	}
++	if b.Timestamp < float64(mtp.Unix()+1) {
++		t.Fatalf("bootstrap timestamp=%v below MTP+1=%d", b.Timestamp, mtp.Unix()+1)
++	}
++}
++
++func TestC1V3BootstrapClockSanityFailure(t *testing.T) {
++	now := time.Unix(int64(protocol.GenesisTimestamp+301), 0)
++	c := newC1NodeChain(t, now)
++	_, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, true, 300)
++	if err == nil || !strings.Contains(err.Error(), "V3 bootstrap mining refused because local clock sanity validation failed") {
++		t.Fatalf("expected local clock sanity refusal, got %v", err)
++	}
++}
++
++func TestC1V3BootstrapStillUsesConsensusIngressBoundary(t *testing.T) {
++	now := time.Unix(int64(protocol.GenesisTimestamp+100), 0)
++	c := newC1NodeChain(t, now)
++	b, err := MineNextWithBootstrap(c, "SYJaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, clock.FixedClock{Current: now}, clock.UnavailablePeerMedian{}, true, 300)
++	if err != nil {
++		t.Fatalf("bootstrap mining failed: %v", err)
++	}
++	if b.Timestamp < float64(c.Tip().Timestamp+1) {
++		t.Fatalf("bootstrap timestamp=%v below parent+1=%v", b.Timestamp, c.Tip().Timestamp+1)
++	}
++	ok, _, err := c.Accept(b)
++	if err != nil || !ok {
++		t.Fatalf("valid bootstrap block rejected at ingress: ok=%v err=%v", ok, err)
++	}
++}
++
+ func TestC1V3MiningClockSafety(t *testing.T) {
+ 	now := time.Unix(1735690000, 0)
+ 	c := newC1NodeChain(t, now)
+--- a/internal/node/node.go
++++ b/internal/node/node.go
+@@ -31,34 +31,40 @@
+ )
+ 
+ type Config struct {
+-	DataDir                 string   `json:"data_dir"`
+-	NetworkName             string   `json:"network_name"`
+-	ListenAddress           string   `json:"listen_address"`
+-	AdvertisedAddress       string   `json:"advertised_address"`
+-	Seeds                   []string `json:"seeds"`
+-	MaxPeers                int      `json:"max_peers"`
+-	APIListenAddress        string   `json:"api_listen_address"`
+-	MempoolMax              int      `json:"mempool_max"`
+-	LogLevel                string   `json:"log_level"`
+-	Phase7GenesisStatePath  string   `json:"phase7_genesis_state_path,omitempty"`
+-	Phase7GenesisCommitment string   `json:"phase7_genesis_commitment,omitempty"`
+-	ProtocolVersion         uint8    `json:"protocol_version,omitempty"`
+-	NetworkID               string   `json:"network_id,omitempty"`
+-	GenesisNetworkName      string   `json:"genesis_network_name,omitempty"`
+-	APIAuthToken            string   `json:"api_auth_token,omitempty"`
+-	APIUseTLS               bool     `json:"api_use_tls,omitempty"`
+-	APIRequireTLS           bool     `json:"api_require_tls,omitempty"`
+-	APITLSCertFile          string   `json:"api_tls_cert_file,omitempty"`
+-	APITLSKeyFile           string   `json:"api_tls_key_file,omitempty"`
+-	P2PUseTLS               bool     `json:"p2p_use_tls,omitempty"`
+-	P2PTLSCertFile          string   `json:"p2p_tls_cert_file,omitempty"`
+-	P2PTLSKeyFile           string   `json:"p2p_tls_key_file,omitempty"`
+-	P2PTLSCAFile            string   `json:"p2p_tls_ca_file,omitempty"`
+-	P2PTLSServerName        string   `json:"p2p_tls_server_name,omitempty"`
++	DataDir                           string   `json:"data_dir"`
++	NetworkName                       string   `json:"network_name"`
++	ListenAddress                     string   `json:"listen_address"`
++	AdvertisedAddress                 string   `json:"advertised_address"`
++	Seeds                             []string `json:"seeds"`
++	MaxPeers                          int      `json:"max_peers"`
++	APIListenAddress                  string   `json:"api_listen_address"`
++	MempoolMax                        int      `json:"mempool_max"`
++	LogLevel                          string   `json:"log_level"`
++	Phase7GenesisStatePath            string   `json:"phase7_genesis_state_path,omitempty"`
++	Phase7GenesisCommitment           string   `json:"phase7_genesis_commitment,omitempty"`
++	ProtocolVersion                   uint8    `json:"protocol_version,omitempty"`
++	NetworkID                         string   `json:"network_id,omitempty"`
++	GenesisNetworkName                string   `json:"genesis_network_name,omitempty"`
++	APIAuthToken                      string   `json:"api_auth_token,omitempty"`
++	APIUseTLS                         bool     `json:"api_use_tls,omitempty"`
++	APIRequireTLS                     bool     `json:"api_require_tls,omitempty"`
++	V3SoloBootstrapMining             bool     `json:"v3_solo_bootstrap_mining,omitempty"`
++	V3SoloBootstrapClockSanitySeconds int64    `json:"v3_solo_bootstrap_clock_sanity_seconds,omitempty"`
++	APITLSCertFile                    string   `json:"api_tls_cert_file,omitempty"`
++	APITLSKeyFile                     string   `json:"api_tls_key_file,omitempty"`
++	P2PUseTLS                         bool     `json:"p2p_use_tls,omitempty"`
++	P2PTLSCertFile                    string   `json:"p2p_tls_cert_file,omitempty"`
++	P2PTLSKeyFile                     string   `json:"p2p_tls_key_file,omitempty"`
++	P2PTLSCAFile                      string   `json:"p2p_tls_ca_file,omitempty"`
++	P2PTLSServerName                  string   `json:"p2p_tls_server_name,omitempty"`
+ }
+ 
+ func DefaultConfig(dataDir string) Config {
+-	return Config{DataDir: dataDir, NetworkName: "sayanjali-mainnet-mvp", ListenAddress: "127.0.0.1:3030", AdvertisedAddress: "127.0.0.1:3030", MaxPeers: 32, APIListenAddress: "127.0.0.1:8080", MempoolMax: 1000, LogLevel: "INFO"}
++	return Config{
++		DataDir: dataDir, NetworkName: "sayanjali-mainnet-mvp", ListenAddress: "127.0.0.1:3030",
++		AdvertisedAddress: "127.0.0.1:3030", MaxPeers: 32, APIListenAddress: "127.0.0.1:8080",
++		MempoolMax: 1000, LogLevel: "INFO", V3SoloBootstrapClockSanitySeconds: int64(protocol.V3FutureTimeBound / time.Second),
++	}
+ }
+ func LoadConfig(path string, defaults Config) (Config, error) {
+ 	info, statErr := os.Stat(path)
+@@ -100,6 +106,9 @@
+ 	if c.LogLevel == "" {
+ 		c.LogLevel = defaults.LogLevel
+ 	}
++	if c.V3SoloBootstrapClockSanitySeconds == 0 {
++		c.V3SoloBootstrapClockSanitySeconds = defaults.V3SoloBootstrapClockSanitySeconds
++	}
+ 	return c, nil
+ }
+ func SaveDefaultConfig(path string, c Config) error {
+@@ -185,6 +194,9 @@
+ 	if err := n.cfg.ValidateTransport(); err != nil {
+ 		return err
+ 	}
++	if err := n.validateV3BootstrapConfig(); err != nil {
++		return err
++	}
+ 	id, created, err := identity.LoadOrCreate(filepath.Join(n.cfg.DataDir, "identity"))
+ 	if err != nil {
+ 		return err
+@@ -311,6 +323,12 @@
+ 	}
+ 	n.chain = ch
+ 	n.chain.SetClock(n.clock)
++	if n.cfg.ProtocolVersion >= 3 && n.cfg.V3SoloBootstrapMining {
++		n.log.Warn("WARNING: V3 SOLO/BOOTSTRAP MINING MODE ENABLED",
++			"peer_median_required", false,
++			"operator_clock_required", true,
++			"purpose", "controlled network bootstrap/testing only")
++	}
+ 	n.pool = mempool.New(n.cfg.MempoolMax)
+ 	if n.cfg.ProtocolVersion >= 2 {
+ 		n.v2pool = mempool.NewV2(n.cfg.MempoolMax)
+@@ -395,6 +413,17 @@
+ 	}
+ }
+ 
++func (n *Node) validateV3BootstrapConfig() error {
++	if n.cfg.ProtocolVersion < 3 {
++		return nil
++	}
++	max := int64(protocol.V3FutureTimeBound / time.Second)
++	if n.cfg.V3SoloBootstrapClockSanitySeconds < 1 || n.cfg.V3SoloBootstrapClockSanitySeconds > max {
++		return fmt.Errorf("V3 bootstrap clock sanity must be between 1 and %d seconds", max)
++	}
++	return nil
++}
++
+ func (n *Node) SetPeerMedianProvider(provider clock.PeerMedian) {
+ 	if provider == nil {
+ 		provider = clock.UnavailablePeerMedian{}
+@@ -431,6 +460,14 @@
+ }
+ 
+ func MineNextWithClockSafety(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian) (*block.Block, error) {
++	return mineNextWithClockSafety(ch, receiver, txs, clk, peerMedian, false, 0)
++}
++
++func MineNextWithBootstrap(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian, bootstrapEnabled bool, sanitySeconds int64) (*block.Block, error) {
++	return mineNextWithClockSafety(ch, receiver, txs, clk, peerMedian, bootstrapEnabled, sanitySeconds)
++}
++
++func mineNextWithClockSafety(ch *chain.Chain, receiver string, txs []transaction.Transaction, clk clock.Clock, peerMedian clock.PeerMedian, bootstrapEnabled bool, sanitySeconds int64) (*block.Block, error) {
+ 	if clk == nil {
+ 		clk = clock.RealClock{}
+ 	}
+@@ -440,14 +477,26 @@
+ 	if ch.ProtocolVersion() >= 3 {
+ 		peerTime, ok := peerMedian.MedianTime()
+ 		if !ok {
+-			return nil, errors.New("V3 mining refused: peer median clock unavailable")
+-		}
+-		delta := clk.Now().Sub(peerTime)
+-		if delta < 0 {
+-			delta = -delta
+-		}
+-		if delta > protocol.V3MiningClockSkewLimit {
+-			return nil, fmt.Errorf("V3 mining refused: local clock differs from peer median by %s (> %s)", delta.Round(time.Second), protocol.V3MiningClockSkewLimit)
++			if !bootstrapEnabled {
++				return nil, errors.New("V3 mining refused: peer median clock unavailable")
++			}
++			mtp, ok := ch.MedianTimePast()
++			if !ok {
++				return nil, errors.New("V3 bootstrap mining refused: median-time-past unavailable")
++			}
++			now := clk.Now()
++			maxSanity := time.Duration(sanitySeconds) * time.Second
++			if now.Before(mtp) || now.After(mtp.Add(maxSanity)) {
++				return nil, fmt.Errorf("V3 bootstrap mining refused because local clock sanity validation failed: local=%s MTP=%s allowed_drift=%s", now.UTC().Format(time.RFC3339), mtp.UTC().Format(time.RFC3339), maxSanity)
++			}
++		} else {
++			delta := clk.Now().Sub(peerTime)
++			if delta < 0 {
++				delta = -delta
++			}
++			if delta > protocol.V3MiningClockSkewLimit {
++				return nil, fmt.Errorf("V3 mining refused: local clock differs from peer median by %s (> %s)", delta.Round(time.Second), protocol.V3MiningClockSkewLimit)
++			}
+ 		}
+ 	}
+ 	tip := ch.Tip()
+--- /dev/null
++++ b/.github/workflows/build1-c1-verification.yml
+name: Build 1 C-1 Verification
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  build1-c1:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Go 1.27.1
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.27.1"
+          cache: true
+
+      - name: Verify exact Go toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          test "$(go version | awk '{print $3}')" = "go1.27.1"
+          test "$(go env GOTOOLCHAIN)" = "local"
+
+      - name: Verify module dependency policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -E '^replace[[:space:]]' go.mod; then
+            echo "replace directives are forbidden for C-1 verification" >&2
+            exit 1
+          fi
+          go list -m all | grep -i 'decred/dcrd/dcrec/secp256k1/v4'
+
+      - name: gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: go test race
+        run: go test -race ./...
+
+      - name: C-1 deterministic tests
+        run: go test ./internal/chain ./internal/node -run 'TestC1' -count=1 -v
+
+      - name: V1/V2 compatibility
+        run: go test ./internal/chain -run '^TestC1V1V2TimestampCompatibility$' -count=1 -v
+
+      - name: Replay clock independence
+        run: go test ./internal/chain -run '^TestC1V3ReplayIsIndependentOfClock$' -count=1 -v
+
+      - name: Zero-call replay proof
+        run: go test ./internal/chain -run '^TestC1V3ReplayDoesNotCallClockNow$' -count=1 -v
+
+      - name: V3 bootstrap tests
+        run: go test ./internal/node -run 'TestC1V3Bootstrap|TestC1V3MiningClockSafety' -count=1 -v
+
+      - name: Deterministic restart/reload harness
+        run: go run ./cmd/build1_c1

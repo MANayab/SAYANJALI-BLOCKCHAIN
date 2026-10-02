@@ -14,6 +14,18 @@ import (
 
 const c1TestNetworkID = "1111111111111111111111111111111111111111111111111111111111111111"
 
+type countingClock struct {
+	now   time.Time
+	calls int
+}
+
+func (c *countingClock) Now() time.Time {
+	c.calls++
+	return c.now
+}
+
+func (c *countingClock) NowCalls() int { return c.calls }
+
 func openC1V3(t *testing.T, dir string, clk clock.Clock) *Chain {
 	t.Helper()
 	st, err := storage.Open(dir)
@@ -147,6 +159,49 @@ func TestC1V3ReplayIsIndependentOfClock(t *testing.T) {
 				t.Fatalf("replay differs: height=%d tip=%s root=%s work=%s", cc.Height(), cc.TipHash(), cc.StateRoot(), cc.Work())
 			}
 		})
+	}
+}
+
+func TestC1V3ReplayDoesNotCallClockNow(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Unix(int64(protocol.GenesisTimestamp+1000), 0)
+	writeClock := &countingClock{now: base}
+	st, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := phase7TestState(t)
+	c, err := openWithProtocolAndClock(st, &gs, 3, c1TestNetworkID, "syjnet-v2-"+c1TestNetworkID, writeClock)
+	if err != nil {
+		_ = st.Close()
+		t.Fatal(err)
+	}
+	b := c1V3Block(t, c, protocol.GenesisTimestamp+1001)
+	if ok, _, err := c.Accept(b); err != nil || !ok {
+		_ = st.Close()
+		t.Fatalf("accept: ok=%v err=%v", ok, err)
+	}
+	wantHeight, wantTip, wantRoot, wantWork := c.Height(), c.TipHash(), c.StateRoot(), c.Work().String()
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	replayClock := &countingClock{now: base.Add(50 * 365 * 24 * time.Hour)}
+	replayStore, err := storage.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := openWithProtocolAndClock(replayStore, &gs, 3, c1TestNetworkID, "syjnet-v2-"+c1TestNetworkID, replayClock)
+	if err != nil {
+		_ = replayStore.Close()
+		t.Fatal(err)
+	}
+	defer replayStore.Close()
+	if replayClock.NowCalls() != 0 {
+		t.Fatalf("historical replay called Clock.Now %d times; want exactly 0", replayClock.NowCalls())
+	}
+	if replayed.Height() != wantHeight || replayed.TipHash() != wantTip || replayed.StateRoot() != wantRoot || replayed.Work().String() != wantWork {
+		t.Fatalf("replay differs: height=%d tip=%s root=%s work=%s", replayed.Height(), replayed.TipHash(), replayed.StateRoot(), replayed.Work())
 	}
 }
 
